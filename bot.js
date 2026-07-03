@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require("discord.js");
 
 const client = new Client({
   intents: [
@@ -15,31 +15,26 @@ const MUTE_MS              = 5 * 60 * 1000;
 const CANAL_SUGESTOES_ID   = "1511518813701804062";
 const CANAL_LOGS_ID        = "1510353328821764289";
 const CANAL_AVISO_ID       = "1508390560795197500";
+const CANAL_TICKET_PAINEL  = "1509269400774115489";
+const CATEGORIA_TICKETS_ID = "1522720316785295541";
 const CARGO_STAFF_ID       = "1508405150572871720";
-const CATEGORIA_TICKETS_ID = "1509269400774115489";
 const CARGO_SUPORTE_ID     = "1513399309306036355";
 
 const economia    = {};
 const apostas     = {};
 const inventarios = {};
-const tickets     = {}; // { channelId: { userId, categoria } }
+const tickets     = {};
 
 const CARGOS_ISENTOS   = ["1509304131263926292", "1508405150572871720"];
 const CARGOS_MODERACAO = ["1508405150572871720"];
 
-// ============================================================
-// LOJA
-// ============================================================
 const LOJA = [
-  { id: "vip",         nome: "🌟 Cargo VIP",        preco: 500,  roleId: "1521544208073228528", tipo: "cargo" },
-  { id: "silenciador", nome: "🔇 Silenciador",       preco: 5000, tipo: "item", descricao: "Muta alguém por 5 minutos. Use: /usar item:silenciador" },
-  { id: "apelido",     nome: "🏷️ Apelido",           preco: 1000, tipo: "item", descricao: "Muda o apelido de alguém por 1h. Use: /usar item:apelido" },
-  { id: "caixa",       nome: "🎁 Caixa Misteriosa",  preco: 5000, tipo: "item", descricao: "Ganhe entre 100 e 10.000 ZéCoins. Use: /usar item:caixa" },
+  { id: "vip",         nome: "🌟 Cargo VIP",       preco: 500,  roleId: "1521544208073228528", tipo: "cargo" },
+  { id: "silenciador", nome: "🔇 Silenciador",      preco: 5000, tipo: "item", descricao: "Muta alguém por 5 minutos." },
+  { id: "apelido",     nome: "🏷️ Apelido",          preco: 1000, tipo: "item", descricao: "Muda o apelido de alguém por 1h." },
+  { id: "caixa",       nome: "🎁 Caixa Misteriosa", preco: 5000, tipo: "item", descricao: "Ganhe entre 100 e 10.000 ZéCoins." },
 ];
 
-// ============================================================
-// FUNÇÕES AUXILIARES
-// ============================================================
 function getPerfil(userId) {
   if (!economia[userId]) economia[userId] = { saldo: 0, ultimoDiario: 0, ultimoTrabalho: 0 };
   return economia[userId];
@@ -66,9 +61,40 @@ async function enviarLog(guild, embed) {
   }
 }
 
-// ============================================================
-// PALAVRÕES
-// ============================================================
+async function enviarPainelTicket(guild) {
+  try {
+    const canal = await guild.channels.fetch(CANAL_TICKET_PAINEL);
+    if (!canal) return;
+
+    const msgs    = await canal.messages.fetch({ limit: 20 });
+    const botMsgs = msgs.filter((m) => m.author.id === guild.members.me.id);
+    for (const [, msg] of botMsgs) { try { await msg.delete(); } catch {} }
+
+    const embed = new EmbedBuilder()
+      .setTitle("Suporte do Zé")
+      .setDescription("Clique aqui para abrir seu ticket!")
+      .setColor("Yellow")
+      .setImage("https://i.imgur.com/6sSikdc.png")
+      .setFooter({ text: "Suporte Do Zé" });
+
+    const select = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("ticket_categoria")
+        .setPlaceholder("Escolha uma opção para sua Dúvida.")
+        .addOptions(
+          new StringSelectMenuOptionBuilder().setLabel("📜 Dúvida Script").setDescription("Dúvidas sobre scripts").setValue("duvida_script").setEmoji("📜"),
+          new StringSelectMenuOptionBuilder().setLabel("⚙️ Dúvida Executor").setDescription("Dúvidas sobre executores").setValue("duvida_executor").setEmoji("⚙️"),
+          new StringSelectMenuOptionBuilder().setLabel("💬 Outros").setDescription("Outros assuntos").setValue("outros").setEmoji("💬"),
+        )
+    );
+
+    await canal.send({ embeds: [embed], components: [select] });
+    console.log("[TICKET] Painel enviado!");
+  } catch (err) {
+    console.error("[ERRO PAINEL TICKET]", err.message);
+  }
+}
+
 const PALAVROES = [
   "foda", "fodas", "fodasse", "fodase", "fudeu", "fudendo", "fudido",
   "foder", "fodam", "fodao", "fodão", "foda-se", "vai se foder", "vai foder",
@@ -116,27 +142,21 @@ function contemPalavrão(texto) {
   return [...PADROES, ...PADROES_EXATOS].some((r) => { r.lastIndex = 0; return r.test(texto); });
 }
 
-// ============================================================
-// BOT PRONTO
-// ============================================================
 client.once("clientReady", async () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
 
   const commands = [
     new SlashCommandBuilder()
-      .setName("say")
-      .setDescription("Faz o bot enviar uma mensagem")
+      .setName("say").setDescription("Faz o bot enviar uma mensagem")
       .addStringOption((opt) => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true))
       .addChannelOption((opt) => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
 
     new SlashCommandBuilder()
-      .setName("avatar")
-      .setDescription("Mostra a foto de perfil de alguém")
+      .setName("avatar").setDescription("Mostra a foto de perfil de alguém")
       .addUserOption((opt) => opt.setName("usuario").setDescription("De quem ver o avatar").setRequired(false)),
 
     new SlashCommandBuilder()
-      .setName("video")
-      .setDescription("Anuncia um vídeo novo do YouTube")
+      .setName("video").setDescription("Anuncia um vídeo novo do YouTube")
       .addStringOption((opt) => opt.setName("link").setDescription("Link do vídeo").setRequired(true))
       .addChannelOption((opt) => opt.setName("canal").setDescription("Canal onde anunciar").setRequired(true))
       .addStringOption((opt) => opt.setName("titulo").setDescription("Título personalizado").setRequired(false))
@@ -146,22 +166,19 @@ client.once("clientReady", async () => {
     new SlashCommandBuilder().setName("trabalhar").setDescription("Trabalhe para ganhar ZéCoins (a cada 1 hora)"),
 
     new SlashCommandBuilder()
-      .setName("carteira")
-      .setDescription("Veja seu saldo de ZéCoins")
+      .setName("carteira").setDescription("Veja seu saldo de ZéCoins")
       .addUserOption((opt) => opt.setName("usuario").setDescription("Ver saldo de outra pessoa").setRequired(false)),
 
     new SlashCommandBuilder().setName("loja").setDescription("Veja os itens disponíveis na loja"),
 
     new SlashCommandBuilder()
-      .setName("comprar")
-      .setDescription("Compra um item da loja")
+      .setName("comprar").setDescription("Compra um item da loja")
       .addStringOption((opt) => opt.setName("item").setDescription("ID do item").setRequired(true)),
 
     new SlashCommandBuilder().setName("inventario").setDescription("Veja seus itens comprados"),
 
     new SlashCommandBuilder()
-      .setName("usar")
-      .setDescription("Usa um item do seu inventário")
+      .setName("usar").setDescription("Usa um item do seu inventário")
       .addStringOption((opt) => opt.setName("item").setDescription("ID do item").setRequired(true))
       .addUserOption((opt) => opt.setName("usuario").setDescription("Alvo").setRequired(false))
       .addStringOption((opt) => opt.setName("novo-apelido").setDescription("Novo apelido").setRequired(false)),
@@ -169,53 +186,39 @@ client.once("clientReady", async () => {
     new SlashCommandBuilder().setName("rank").setDescription("Ranking dos membros mais ricos"),
 
     new SlashCommandBuilder()
-      .setName("dar-moedas")
-      .setDescription("[STAFF] Dá ZéCoins para alguém")
+      .setName("dar-moedas").setDescription("[STAFF] Dá ZéCoins para alguém")
       .addUserOption((opt) => opt.setName("usuario").setDescription("Quem vai receber").setRequired(true))
       .addIntegerOption((opt) => opt.setName("quantidade").setDescription("Quantas moedas dar").setRequired(true)),
 
     new SlashCommandBuilder()
-      .setName("apostar")
-      .setDescription("Desafia alguém para uma aposta de ZéCoins")
+      .setName("apostar").setDescription("Desafia alguém para uma aposta de ZéCoins")
       .addUserOption((opt) => opt.setName("usuario").setDescription("Quem desafiar").setRequired(true))
       .addIntegerOption((opt) => opt.setName("valor").setDescription("Quantas ZéCoins apostar").setRequired(true)),
 
     new SlashCommandBuilder()
-      .setName("lockdown")
-      .setDescription("[STAFF] Ativa o lockdown do servidor")
+      .setName("lockdown").setDescription("[STAFF] Ativa o lockdown do servidor")
       .addStringOption((opt) => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
 
-    new SlashCommandBuilder()
-      .setName("unlockdown")
-      .setDescription("[STAFF] Desativa o lockdown e reabre todos os canais"),
-
+    new SlashCommandBuilder().setName("unlockdown").setDescription("[STAFF] Desativa o lockdown"),
     new SlashCommandBuilder().setName("esconder-canal").setDescription("[STAFF] Torna o canal invisível para membros"),
     new SlashCommandBuilder().setName("mostrar-canal").setDescription("[STAFF] Torna o canal visível novamente"),
 
     new SlashCommandBuilder()
-      .setName("lock")
-      .setDescription("[STAFF] Bloqueia envio de mensagens no canal")
+      .setName("lock").setDescription("[STAFF] Bloqueia envio de mensagens no canal")
       .addStringOption((opt) => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
 
     new SlashCommandBuilder().setName("unlock").setDescription("[STAFF] Desbloqueia o canal"),
 
     new SlashCommandBuilder()
-      .setName("slowmode")
-      .setDescription("[STAFF] Ativa modo lento no canal")
+      .setName("slowmode").setDescription("[STAFF] Ativa modo lento no canal")
       .addIntegerOption((opt) => opt.setName("segundos").setDescription("Segundos (0 para desativar)").setRequired(true)),
 
     new SlashCommandBuilder()
-      .setName("limpar")
-      .setDescription("[STAFF] Apaga mensagens do canal")
+      .setName("limpar").setDescription("[STAFF] Apaga mensagens do canal")
       .addIntegerOption((opt) => opt.setName("quantidade").setDescription("Quantas mensagens (máx 100)").setRequired(true)),
 
-    new SlashCommandBuilder()
-      .setName("ticket")
-      .setDescription("Abre o painel de tickets para suporte"),
-
-    new SlashCommandBuilder()
-      .setName("fechar-ticket")
-      .setDescription("[STAFF] Fecha o ticket atual e salva o transcript"),
+    new SlashCommandBuilder().setName("painel-ticket").setDescription("[STAFF] Envia o painel de ticket no canal configurado"),
+    new SlashCommandBuilder().setName("fechar-ticket").setDescription("[STAFF] Fecha o ticket atual e salva o transcript"),
 
   ].map((cmd) => cmd.toJSON());
 
@@ -228,9 +231,6 @@ client.once("clientReady", async () => {
   }
 });
 
-// ============================================================
-// MENSAGENS
-// ============================================================
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
 
@@ -255,7 +255,6 @@ client.on("messageCreate", async (message) => {
     await message.member.timeout(MUTE_MS, "Automod: linguagem inapropriada");
     await message.channel.send(`⚠️ ${message.author}, linguagem inapropriada! Você foi mutado por 5 minutos.`);
     console.log(`[MUTE] ${message.author.tag} mutado.`);
-
     await enviarLog(message.guild, new EmbedBuilder()
       .setTitle("🔇 Mute Automático").setColor("Orange")
       .addFields(
@@ -270,24 +269,15 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// ============================================================
-// SLASH COMMANDS + BOTÕES + SELECTS
-// ============================================================
 client.on("interactionCreate", async (interaction) => {
 
-  // ============================================================
-  // BOTÕES
-  // ============================================================
+  // ---- BOTÕES ----
   if (interaction.isButton()) {
 
-    // ---- APOSTA ----
     if (interaction.customId === "aposta_aceitar" || interaction.customId === "aposta_recusar") {
       const aposta = apostas[interaction.message.id];
       if (!aposta) return;
-
-      if (interaction.user.id !== aposta.desafiado) {
-        return interaction.reply({ content: "❌ Essa aposta não é com você!", ephemeral: true });
-      }
+      if (interaction.user.id !== aposta.desafiado) return interaction.reply({ content: "❌ Essa aposta não é com você!", flags: 64 });
 
       if (interaction.customId === "aposta_recusar") {
         delete apostas[interaction.message.id];
@@ -296,151 +286,95 @@ client.on("interactionCreate", async (interaction) => {
 
       const pD  = getPerfil(aposta.desafiante);
       const pDo = getPerfil(aposta.desafiado);
-
-      if (pD.saldo < aposta.valor) {
-        delete apostas[interaction.message.id];
-        return interaction.update({ content: `❌ <@${aposta.desafiante}> não tem mais ZéCoins suficientes!`, embeds: [], components: [] });
-      }
-      if (pDo.saldo < aposta.valor) {
-        delete apostas[interaction.message.id];
-        return interaction.update({ content: `❌ Você não tem ZéCoins suficientes!`, embeds: [], components: [] });
-      }
+      if (pD.saldo < aposta.valor)  { delete apostas[interaction.message.id]; return interaction.update({ content: `❌ <@${aposta.desafiante}> não tem mais ZéCoins!`, embeds: [], components: [] }); }
+      if (pDo.saldo < aposta.valor) { delete apostas[interaction.message.id]; return interaction.update({ content: `❌ Você não tem ZéCoins suficientes!`, embeds: [], components: [] }); }
 
       const resultado  = Math.random() < 0.5 ? "cara" : "coroa";
       const vencedorId = resultado === "cara" ? aposta.desafiante : aposta.desafiado;
       const perdedorId = resultado === "cara" ? aposta.desafiado  : aposta.desafiante;
-
       getPerfil(vencedorId).saldo += aposta.valor;
       getPerfil(perdedorId).saldo -= aposta.valor;
       delete apostas[interaction.message.id];
 
       return interaction.update({
         content: "",
-        embeds: [new EmbedBuilder()
-          .setTitle("🪙 Resultado da Aposta!").setColor("Gold")
+        embeds: [new EmbedBuilder().setTitle("🪙 Resultado da Aposta!").setColor("Gold")
           .addFields(
             { name: "Resultado",   value: resultado === "cara" ? "🟡 CARA" : "⚪ COROA" },
             { name: "🏆 Vencedor", value: `<@${vencedorId}> ganhou **${aposta.valor} ZéCoins**!` },
             { name: "💸 Perdedor", value: `<@${perdedorId}> perdeu **${aposta.valor} ZéCoins**` },
-          ).setTimestamp()
-        ],
+          ).setTimestamp()],
         components: [],
       });
     }
 
-    // ---- FECHAR TICKET (botão) ----
     if (interaction.customId === "fechar_ticket") {
-      if (!temCargoMod(interaction.member)) {
-        return interaction.reply({ content: "❌ Só staff pode fechar tickets!", ephemeral: true });
-      }
-
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 });
       const ticket = tickets[interaction.channel.id];
-      if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", ephemeral: true });
+      if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", flags: 64 });
 
       await interaction.deferReply();
-
-      // Gera transcript
-      const mensagens = await interaction.channel.messages.fetch({ limit: 100 });
+      const mensagens  = await interaction.channel.messages.fetch({ limit: 100 });
       const transcript = mensagens.reverse().map((m) =>
         `[${new Date(m.createdTimestamp).toLocaleString("pt-BR")}] ${m.author.tag}: ${m.content || "[anexo/embed]"}`
       ).join("\n");
 
-      // Loga o transcript
       const logCanal = await interaction.guild.channels.fetch(CANAL_LOGS_ID).catch(() => null);
       if (logCanal) {
-        const transcriptEmbed = new EmbedBuilder()
-          .setTitle("📋 Ticket Fechado")
-          .setColor("Red")
-          .addFields(
-            { name: "Canal",     value: interaction.channel.name },
-            { name: "Usuário",   value: `<@${ticket.userId}>` },
-            { name: "Categoria", value: ticket.categoria },
-            { name: "Fechado por", value: `${interaction.user.tag}` },
-          )
-          .setTimestamp();
-
-        // Manda o transcript como arquivo de texto
-        const buffer = Buffer.from(transcript, "utf-8");
         await logCanal.send({
-          embeds: [transcriptEmbed],
-          files: [{ attachment: buffer, name: `transcript-${interaction.channel.name}.txt` }],
+          embeds: [new EmbedBuilder().setTitle("📋 Ticket Fechado").setColor("Red")
+            .addFields(
+              { name: "Canal",       value: interaction.channel.name },
+              { name: "Usuário",     value: `<@${ticket.userId}>` },
+              { name: "Categoria",   value: ticket.categoria },
+              { name: "Fechado por", value: interaction.user.tag },
+            ).setTimestamp()],
+          files: [{ attachment: Buffer.from(transcript, "utf-8"), name: `transcript-${interaction.channel.name}.txt` }],
         });
       }
 
       await interaction.editReply("✅ Ticket fechado! Canal será deletado em 5 segundos...");
       delete tickets[interaction.channel.id];
-
-      setTimeout(async () => {
-        try { await interaction.channel.delete(); } catch {}
-      }, 5000);
+      setTimeout(async () => { try { await interaction.channel.delete(); } catch {} }, 5000);
     }
-
     return;
   }
 
-  // ============================================================
-  // SELECT MENU — categorias do ticket
-  // ============================================================
+  // ---- SELECT MENU ----
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === "ticket_categoria") {
       const categoria = interaction.values[0];
       const userId    = interaction.user.id;
       const guild     = interaction.guild;
 
-      // Verifica se já tem ticket aberto
       const ticketExistente = Object.values(tickets).find((t) => t.userId === userId);
-      if (ticketExistente) {
-        return interaction.reply({
-          content: "❌ Você já tem um ticket aberto! Feche ele antes de abrir outro.",
-          ephemeral: true,
-        });
-      }
+      if (ticketExistente) return interaction.reply({ content: "❌ Você já tem um ticket aberto!", flags: 64 });
 
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: 64 });
 
       const nomes = {
         duvida_script:   "📜 Dúvida Script",
         duvida_executor: "⚙️ Dúvida Executor",
         outros:          "💬 Outros",
       };
-
       const nomeCategoria = nomes[categoria] || categoria;
-      const nomeCanal     = `ticket-${interaction.user.username.toLowerCase().replace(/\s/g, "-")}`;
+      const nomeCanal     = `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
 
       try {
-        // Cria o canal privado
         const canalTicket = await guild.channels.create({
           name: nomeCanal,
           type: ChannelType.GuildText,
           parent: CATEGORIA_TICKETS_ID,
           permissionOverwrites: [
-            {
-              // Ninguém vê por padrão
-              id: guild.roles.everyone.id,
-              deny: [PermissionFlagsBits.ViewChannel],
-            },
-            {
-              // Usuário que abriu vê e fala
-              id: userId,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-            },
-            {
-              // Cargo de suporte vê e fala
-              id: CARGO_SUPORTE_ID,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-            },
-            {
-              // Cargo de staff também vê
-              id: CARGO_STAFF_ID,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-            },
+            { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: userId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: CARGO_SUPORTE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: CARGO_STAFF_ID,   allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
           ],
         });
 
-        // Salva o ticket
         tickets[canalTicket.id] = { userId, categoria: nomeCategoria };
 
-        // Manda a mensagem de boas vindas no canal do ticket
         const embed = new EmbedBuilder()
           .setTitle(`🎫 Ticket — ${nomeCategoria}`)
           .setColor("Blue")
@@ -449,31 +383,25 @@ client.on("interactionCreate", async (interaction) => {
             `Olá ${interaction.user}! 👋\n\n` +
             `Seu ticket foi aberto na categoria **${nomeCategoria}**.\n` +
             `Nossa equipe irá te atender o mais rápido possível!\n\n` +
-            `📌 **Por favor descreva seu problema com detalhes.**\n` +
-            `⏰ Horário de abertura: <t:${Math.floor(Date.now() / 1000)}:F>`
+            `📌 **Descreva seu problema com detalhes.**\n` +
+            `⏰ Abertura: <t:${Math.floor(Date.now() / 1000)}:F>`
           )
           .addFields(
-            { name: "👤 Usuário",    value: `${interaction.user}` },
-            { name: "📂 Categoria",  value: nomeCategoria },
-            { name: "🛠️ Suporte",   value: `<@&${CARGO_SUPORTE_ID}>` },
+            { name: "👤 Usuário",   value: `${interaction.user}` },
+            { name: "📂 Categoria", value: nomeCategoria },
+            { name: "🛠️ Suporte",  value: `<@&${CARGO_SUPORTE_ID}>` },
           )
           .setFooter({ text: "Scripts SDZ • Suporte" })
           .setTimestamp();
 
-        const botaoFechar = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId("fechar_ticket")
-            .setLabel("🔒 Fechar Ticket")
-            .setStyle(ButtonStyle.Danger),
-        );
-
         await canalTicket.send({
           content: `${interaction.user} | <@&${CARGO_SUPORTE_ID}>`,
           embeds: [embed],
-          components: [botaoFechar],
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId("fechar_ticket").setLabel("🔒 Fechar Ticket").setStyle(ButtonStyle.Danger)
+          )],
         });
 
-        // Log de abertura
         await enviarLog(guild, new EmbedBuilder()
           .setTitle("🎫 Ticket Aberto").setColor("Blue")
           .addFields(
@@ -483,8 +411,7 @@ client.on("interactionCreate", async (interaction) => {
           ).setTimestamp()
         );
 
-        await interaction.editReply(`✅ Seu ticket foi aberto! Acesse: ${canalTicket}`);
-
+        await interaction.editReply(`✅ Ticket aberto! Acesse: ${canalTicket}`);
       } catch (err) {
         console.error("[ERRO TICKET]", err.message);
         await interaction.editReply("❌ Erro ao criar o ticket. Avisa um admin!");
@@ -497,11 +424,11 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- /say ----
   if (interaction.commandName === "say") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const texto = interaction.options.getString("mensagem");
     const canal = interaction.options.getChannel("canal") || interaction.channel;
     await canal.send(texto);
-    await interaction.reply({ content: "✅ Enviado!", ephemeral: true });
+    await interaction.reply({ content: "✅ Enviado!", flags: 64 });
   }
 
   // ---- /avatar ----
@@ -512,7 +439,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- /video ----
   if (interaction.commandName === "video") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const link   = interaction.options.getString("link");
     const canal  = interaction.options.getChannel("canal");
     const titulo = interaction.options.getString("titulo");
@@ -525,7 +452,7 @@ client.on("interactionCreate", async (interaction) => {
       .setColor("Red").setFooter({ text: `${interaction.guild.name} • Notificação Automática` }).setTimestamp();
     if (thumbnailUrl) embed.setImage(thumbnailUrl);
     await canal.send({ content: "🔔 **Fala galera, vídeo novo no canal!**", embeds: [embed] });
-    await interaction.reply({ content: "✅ Anúncio enviado!", ephemeral: true });
+    await interaction.reply({ content: "✅ Anúncio enviado!", flags: 64 });
   }
 
   // ---- /diario ----
@@ -533,9 +460,7 @@ client.on("interactionCreate", async (interaction) => {
     const perfil = getPerfil(interaction.user.id);
     const agora  = Date.now();
     const cd     = 24 * 60 * 60 * 1000;
-    if (agora - perfil.ultimoDiario < cd) {
-      return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoDiario))}**.`, ephemeral: true });
-    }
+    if (agora - perfil.ultimoDiario < cd) return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoDiario))}**.`, flags: 64 });
     const r = Math.floor(Math.random() * 51) + 50;
     perfil.saldo += r; perfil.ultimoDiario = agora;
     await interaction.reply(`💰 ${interaction.user} resgatou **${r} ZéCoins**! Saldo: **${perfil.saldo}**`);
@@ -546,9 +471,7 @@ client.on("interactionCreate", async (interaction) => {
     const perfil = getPerfil(interaction.user.id);
     const agora  = Date.now();
     const cd     = 60 * 60 * 1000;
-    if (agora - perfil.ultimoTrabalho < cd) {
-      return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoTrabalho))}**.`, ephemeral: true });
-    }
+    if (agora - perfil.ultimoTrabalho < cd) return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoTrabalho))}**.`, flags: 64 });
     const trabalhos = ["entregou pizza e ganhou", "consertou um computador e faturou", "vendeu um script raro e lucrou", "ajudou um streamer e recebeu", "fez um frila de design e cobrou"];
     const trabalho = trabalhos[Math.floor(Math.random() * trabalhos.length)];
     const ganho = Math.floor(Math.random() * 26) + 15;
@@ -574,15 +497,15 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "comprar") {
     const itemId = interaction.options.getString("item");
     const item   = LOJA.find((i) => i.id === itemId);
-    if (!item) return interaction.reply({ content: "❌ Item não encontrado.", ephemeral: true });
+    if (!item) return interaction.reply({ content: "❌ Item não encontrado.", flags: 64 });
     const perfil = getPerfil(interaction.user.id);
-    if (perfil.saldo < item.preco) return interaction.reply({ content: `❌ Saldo insuficiente! Você tem **${perfil.saldo}** e precisa de **${item.preco}**.`, ephemeral: true });
+    if (perfil.saldo < item.preco) return interaction.reply({ content: `❌ Saldo insuficiente! Você tem **${perfil.saldo}** e precisa de **${item.preco}**.`, flags: 64 });
     perfil.saldo -= item.preco;
     if (item.tipo === "cargo") {
       try {
         await interaction.member.roles.add(item.roleId);
         await interaction.reply(`✅ Você comprou **${item.nome}**! Cargo adicionado.`);
-      } catch { perfil.saldo += item.preco; await interaction.reply({ content: "❌ Erro ao adicionar o cargo.", ephemeral: true }); }
+      } catch { perfil.saldo += item.preco; await interaction.reply({ content: "❌ Erro ao adicionar o cargo.", flags: 64 }); }
     } else {
       const inv = getInventario(interaction.user.id);
       inv[item.id] = (inv[item.id] || 0) + 1;
@@ -594,7 +517,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "inventario") {
     const inv   = getInventario(interaction.user.id);
     const itens = Object.entries(inv).filter(([, q]) => q > 0);
-    if (!itens.length) return interaction.reply({ content: "🎒 Inventário vazio!", ephemeral: true });
+    if (!itens.length) return interaction.reply({ content: "🎒 Inventário vazio!", flags: 64 });
     const linhas = itens.map(([id, q]) => `${LOJA.find((i) => i.id === id)?.nome || id} — **${q}x**`);
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle(`🎒 Inventário de ${interaction.user.username}`).setDescription(linhas.join("\n")).setColor("Blue")] });
   }
@@ -605,24 +528,24 @@ client.on("interactionCreate", async (interaction) => {
     const alvo    = interaction.options.getUser("usuario");
     const novoApe = interaction.options.getString("novo-apelido");
     const inv     = getInventario(interaction.user.id);
-    if (!inv[itemId] || inv[itemId] <= 0) return interaction.reply({ content: "❌ Você não tem esse item!", ephemeral: true });
+    if (!inv[itemId] || inv[itemId] <= 0) return interaction.reply({ content: "❌ Você não tem esse item!", flags: 64 });
 
     if (itemId === "silenciador") {
-      if (!alvo) return interaction.reply({ content: "❌ Menciona um usuário!", ephemeral: true });
+      if (!alvo) return interaction.reply({ content: "❌ Menciona um usuário!", flags: 64 });
       const membro = await interaction.guild.members.fetch(alvo.id).catch(() => null);
-      if (!membro) return interaction.reply({ content: "❌ Usuário não encontrado.", ephemeral: true });
+      if (!membro) return interaction.reply({ content: "❌ Usuário não encontrado.", flags: 64 });
       try {
         await membro.timeout(5 * 60 * 1000); inv[itemId]--;
         await interaction.reply(`🔇 **${interaction.user}** usou Silenciador em **${alvo}**!`);
         await enviarLog(interaction.guild, new EmbedBuilder().setTitle("🔇 Silenciador Usado").setColor("Orange")
           .addFields({ name: "Usado por", value: interaction.user.tag }, { name: "Alvo", value: alvo.tag }).setTimestamp());
-      } catch { await interaction.reply({ content: "❌ Não consegui mutar!", ephemeral: true }); }
+      } catch { await interaction.reply({ content: "❌ Não consegui mutar!", flags: 64 }); }
     }
 
     else if (itemId === "apelido") {
-      if (!alvo || !novoApe) return interaction.reply({ content: "❌ Usa: `/usar item:apelido usuario:@fulano novo-apelido:Nome`", ephemeral: true });
+      if (!alvo || !novoApe) return interaction.reply({ content: "❌ Usa: `/usar item:apelido usuario:@fulano novo-apelido:Nome`", flags: 64 });
       const membro = await interaction.guild.members.fetch(alvo.id).catch(() => null);
-      if (!membro) return interaction.reply({ content: "❌ Usuário não encontrado.", ephemeral: true });
+      if (!membro) return interaction.reply({ content: "❌ Usuário não encontrado.", flags: 64 });
       const antigo = membro.nickname || membro.user.username;
       try {
         await membro.setNickname(novoApe); inv[itemId]--;
@@ -630,7 +553,7 @@ client.on("interactionCreate", async (interaction) => {
         setTimeout(async () => { try { await membro.setNickname(antigo === membro.user.username ? null : antigo); } catch {} }, 3600000);
         await enviarLog(interaction.guild, new EmbedBuilder().setTitle("🏷️ Apelido Alterado").setColor("Blue")
           .addFields({ name: "Usado por", value: interaction.user.tag }, { name: "Alvo", value: alvo.tag }, { name: "Antigo", value: antigo }, { name: "Novo", value: novoApe }).setTimestamp());
-      } catch { await interaction.reply({ content: "❌ Não consegui mudar o apelido!", ephemeral: true }); }
+      } catch { await interaction.reply({ content: "❌ Não consegui mudar o apelido!", flags: 64 }); }
     }
 
     else if (itemId === "caixa") {
@@ -649,7 +572,7 @@ client.on("interactionCreate", async (interaction) => {
         .setDescription(`${premio.label}\n\n${interaction.user} ganhou **${premio.valor} ZéCoins**!`).setTimestamp()] });
     }
 
-    else { await interaction.reply({ content: "❌ Item não pode ser usado assim.", ephemeral: true }); }
+    else { await interaction.reply({ content: "❌ Item não pode ser usado assim.", flags: 64 }); }
   }
 
   // ---- /rank ----
@@ -665,7 +588,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- /dar-moedas ----
   if (interaction.commandName === "dar-moedas") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const user = interaction.options.getUser("usuario");
     const qtd  = interaction.options.getInteger("quantidade");
     const p    = getPerfil(user.id);
@@ -677,11 +600,11 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "apostar") {
     const desafiado = interaction.options.getUser("usuario");
     const valor     = interaction.options.getInteger("valor");
-    if (desafiado.id === interaction.user.id) return interaction.reply({ content: "❌ Não pode apostar contra si mesmo!", ephemeral: true });
-    if (desafiado.bot) return interaction.reply({ content: "❌ Não pode apostar contra um bot!", ephemeral: true });
-    if (valor <= 0) return interaction.reply({ content: "❌ Valor precisa ser maior que 0!", ephemeral: true });
+    if (desafiado.id === interaction.user.id) return interaction.reply({ content: "❌ Não pode apostar contra si mesmo!", flags: 64 });
+    if (desafiado.bot) return interaction.reply({ content: "❌ Não pode apostar contra um bot!", flags: 64 });
+    if (valor <= 0) return interaction.reply({ content: "❌ Valor precisa ser maior que 0!", flags: 64 });
     const pD = getPerfil(interaction.user.id);
-    if (pD.saldo < valor) return interaction.reply({ content: `❌ Saldo insuficiente! Você tem **${pD.saldo}**.`, ephemeral: true });
+    if (pD.saldo < valor) return interaction.reply({ content: `❌ Saldo insuficiente! Você tem **${pD.saldo}**.`, flags: 64 });
 
     const embed = new EmbedBuilder().setTitle("🎲 Desafio de Aposta!").setColor("Gold")
       .setDescription(`${interaction.user} desafiou ${desafiado} para uma aposta de **${valor} ZéCoins**!\n\n🪙 Decidido por **cara ou coroa**.\n${desafiado}, você aceita?`)
@@ -703,11 +626,11 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- /lockdown ----
   if (interaction.commandName === "lockdown") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const motivo  = interaction.options.getString("motivo") || "Sem motivo especificado";
     const canais  = await interaction.guild.channels.fetch();
     const everyone = interaction.guild.roles.everyone;
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: 64 });
     let fechados = 0;
     for (const [, canal] of canais) {
       if (canal.id === CANAL_AVISO_ID || !canal.isTextBased()) continue;
@@ -725,10 +648,10 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- /unlockdown ----
   if (interaction.commandName === "unlockdown") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const canais  = await interaction.guild.channels.fetch();
     const everyone = interaction.guild.roles.everyone;
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: 64 });
     let abertos = 0;
     for (const [, canal] of canais) {
       if (!canal.isTextBased()) continue;
@@ -745,64 +668,64 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- /esconder-canal ----
   if (interaction.commandName === "esconder-canal") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     try {
       await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: false });
-      await interaction.reply({ content: `✅ Canal **${interaction.channel.name}** escondido!`, ephemeral: true });
+      await interaction.reply({ content: `✅ Canal escondido!`, flags: 64 });
       await enviarLog(interaction.guild, new EmbedBuilder().setTitle("🙈 Canal Escondido").setColor("Grey")
         .addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp());
-    } catch { await interaction.reply({ content: "❌ Não consegui esconder.", ephemeral: true }); }
+    } catch { await interaction.reply({ content: "❌ Não consegui esconder.", flags: 64 }); }
   }
 
   // ---- /mostrar-canal ----
   if (interaction.commandName === "mostrar-canal") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     try {
       await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: true, SendMessages: true });
-      await interaction.reply({ content: `✅ Canal **${interaction.channel.name}** visível!`, ephemeral: true });
+      await interaction.reply({ content: `✅ Canal visível!`, flags: 64 });
       await enviarLog(interaction.guild, new EmbedBuilder().setTitle("👁️ Canal Revelado").setColor("Green")
         .addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp());
-    } catch { await interaction.reply({ content: "❌ Não consegui mostrar.", ephemeral: true }); }
+    } catch { await interaction.reply({ content: "❌ Não consegui mostrar.", flags: 64 }); }
   }
 
   // ---- /lock ----
   if (interaction.commandName === "lock") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const motivo = interaction.options.getString("motivo") || "Sem motivo";
     try {
       await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: false });
       await interaction.reply(`🔒 Canal bloqueado! **Motivo:** ${motivo}`);
       await enviarLog(interaction.guild, new EmbedBuilder().setTitle("🔒 Canal Bloqueado").setColor("Orange")
         .addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }, { name: "Motivo", value: motivo }).setTimestamp());
-    } catch { await interaction.reply({ content: "❌ Não consegui bloquear.", ephemeral: true }); }
+    } catch { await interaction.reply({ content: "❌ Não consegui bloquear.", flags: 64 }); }
   }
 
   // ---- /unlock ----
   if (interaction.commandName === "unlock") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     try {
       await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: true });
       await interaction.reply(`🔓 Canal desbloqueado!`);
       await enviarLog(interaction.guild, new EmbedBuilder().setTitle("🔓 Canal Desbloqueado").setColor("Green")
         .addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp());
-    } catch { await interaction.reply({ content: "❌ Não consegui desbloquear.", ephemeral: true }); }
+    } catch { await interaction.reply({ content: "❌ Não consegui desbloquear.", flags: 64 }); }
   }
 
   // ---- /slowmode ----
   if (interaction.commandName === "slowmode") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const segundos = interaction.options.getInteger("segundos");
     try {
       await interaction.channel.setRateLimitPerUser(segundos);
       await interaction.reply(segundos === 0 ? `✅ Modo lento desativado!` : `🐢 Modo lento: **${segundos} segundos** entre mensagens.`);
-    } catch { await interaction.reply({ content: "❌ Não consegui ativar modo lento.", ephemeral: true }); }
+    } catch { await interaction.reply({ content: "❌ Não consegui ativar modo lento.", flags: 64 }); }
   }
 
   // ---- /limpar ----
   if (interaction.commandName === "limpar") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const qtd = Math.min(interaction.options.getInteger("quantidade"), 100);
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: 64 });
     try {
       const deletadas = await interaction.channel.bulkDelete(qtd, true);
       await interaction.editReply(`✅ **${deletadas.size}** mensagens apagadas!`);
@@ -811,58 +734,20 @@ client.on("interactionCreate", async (interaction) => {
     } catch { await interaction.editReply("❌ Não consegui apagar. Mensagens com mais de 14 dias não podem ser deletadas em massa."); }
   }
 
-  // ---- /ticket ----
-  if (interaction.commandName === "ticket") {
-    const { StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require("discord.js");
-
-    const embed = new EmbedBuilder()
-      .setTitle("🎫 Abrir Ticket de Suporte")
-      .setColor("Blue")
-      .setThumbnail("https://i.imgur.com/6sSikdc.png")
-      .setDescription(
-        "Selecione a categoria do seu ticket no menu abaixo.\n\n" +
-        "📜 **Dúvida Script** — Dúvidas sobre scripts\n" +
-        "⚙️ **Dúvida Executor** — Dúvidas sobre executores\n" +
-        "💬 **Outros** — Outros assuntos\n\n" +
-        "Nossa equipe irá te atender o mais rápido possível!"
-      )
-      .setFooter({ text: "Scripts SDZ • Suporte" })
-      .setTimestamp();
-
-    const select = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("ticket_categoria")
-        .setPlaceholder("📂 Selecione a categoria...")
-        .addOptions(
-          new StringSelectMenuOptionBuilder()
-            .setLabel("📜 Dúvida Script")
-            .setDescription("Dúvidas sobre scripts do servidor")
-            .setValue("duvida_script")
-            .setEmoji("📜"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("⚙️ Dúvida Executor")
-            .setDescription("Dúvidas sobre executores")
-            .setValue("duvida_executor")
-            .setEmoji("⚙️"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("💬 Outros")
-            .setDescription("Outros assuntos")
-            .setValue("outros")
-            .setEmoji("💬"),
-        )
-    );
-
-    await interaction.reply({ embeds: [embed], components: [select] });
+  // ---- /painel-ticket ----
+  if (interaction.commandName === "painel-ticket") {
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
+    await enviarPainelTicket(interaction.guild);
+    await interaction.reply({ content: "✅ Painel de ticket enviado!", flags: 64 });
   }
 
   // ---- /fechar-ticket ----
   if (interaction.commandName === "fechar-ticket") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", ephemeral: true });
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 });
     const ticket = tickets[interaction.channel.id];
-    if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", ephemeral: true });
+    if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", flags: 64 });
 
     await interaction.deferReply();
-
     const mensagens  = await interaction.channel.messages.fetch({ limit: 100 });
     const transcript = mensagens.reverse().map((m) =>
       `[${new Date(m.createdTimestamp).toLocaleString("pt-BR")}] ${m.author.tag}: ${m.content || "[anexo/embed]"}`
@@ -873,9 +758,9 @@ client.on("interactionCreate", async (interaction) => {
       await logCanal.send({
         embeds: [new EmbedBuilder().setTitle("📋 Ticket Fechado").setColor("Red")
           .addFields(
-            { name: "Canal",      value: interaction.channel.name },
-            { name: "Usuário",    value: `<@${ticket.userId}>` },
-            { name: "Categoria",  value: ticket.categoria },
+            { name: "Canal",       value: interaction.channel.name },
+            { name: "Usuário",     value: `<@${ticket.userId}>` },
+            { name: "Categoria",   value: ticket.categoria },
             { name: "Fechado por", value: interaction.user.tag },
           ).setTimestamp()],
         files: [{ attachment: Buffer.from(transcript, "utf-8"), name: `transcript-${interaction.channel.name}.txt` }],
