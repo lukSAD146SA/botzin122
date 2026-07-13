@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
 
 const client = new Client({
   intents: [
@@ -20,7 +20,8 @@ const CANAL_TICKET_PAINEL  = "1509269400774115489";
 const CATEGORIA_TICKETS_ID = "1522720316785295541";
 const CARGO_STAFF_ID       = "1508405150572871720";
 const CARGO_SUPORTE_ID     = "1513399309306036355";
-const CANAL_AVALIACOES_ID  = "1524630141182021682";
+const CANAL_AVALIACOES_ID  = "1524630141182021682"; // Canal onde a mensagem fixa de avaliação ficará
+const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858"; // Canal onde as avaliações serão enviadas
 const TAXA_TRANSFERENCIA   = 0.05;
 const MUTE_LINK_MS         = 60 * 1000;
 
@@ -53,7 +54,7 @@ function ofuscarLuau(codigo) {
     return nome;
   }
 
-  // Converte string para escape hex Luau (\xNN)
+  // Converte string para escape hex Luau (\\xNN)
   function strParaHex(str) {
     return str.split("").map((c) => `\\${c.charCodeAt(0)}`).join("");
   }
@@ -225,6 +226,38 @@ async function enviarPainelTicket(guild) {
 }
 
 // ============================================================
+// PAINEL DE AVALIAÇÃO STAFF
+// ============================================================
+async function enviarPainelAvaliacao(guild) {
+  try {
+    const canal = await guild.channels.fetch(CANAL_AVALIACOES_ID).catch(() => null);
+    if (!canal) return;
+
+    const msgs    = await canal.messages.fetch({ limit: 20 }).catch(() => []);
+    const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
+    for (const [, msg] of botMsgs) { try { await msg.delete(); } catch {} }
+
+    const embed = new EmbedBuilder()
+      .setTitle("Central de Avaliações Staff")
+      .setDescription("Sua opinião é muito importante para nós! Clique no botão abaixo para avaliar um membro da staff.")
+      .setColor("Blue")
+      .setImage("https://i.imgur.com/6sSikdc.png") // Você pode mudar esta imagem
+      .setFooter({ text: "Avalie nossa equipe!" });
+
+    const button = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("abrir_modal_avaliacao")
+        .setLabel("💡 Enviar Avaliação")
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji("💡"),
+    );
+
+    await canal.send({ embeds: [embed], components: [button] });
+    console.log("[AVALIACAO] Painel de avaliação enviado!");
+  } catch (err) { console.error("[ERRO PAINEL AVALIACAO]", err.message); }
+}
+
+// ============================================================
 // AVALIAÇÃO VIA DM
 // ============================================================
 async function enviarAvaliacaoDM(user, staffTag, categoria, guild) {
@@ -321,87 +354,201 @@ client.once("ready", async () => {
       .setName("ficha").setDescription("Informações sobre as Fichas de Serviço Roblox"),
 
     new SlashCommandBuilder()
-      .setName("retirar-ficha").setDescription("[STAFF] Retira uma Ficha de Serviço Roblox do inventário de um usuário")
-      .addUserOption((opt) => opt.setName("usuario").setDescription("Usuário de quem retirar a ficha").setRequired(true))
-      .addIntegerOption((opt) => opt.setName("quantidade").setDescription("Quantidade de fichas a retirar (padrão: 1)").setRequired(false)),
+      .setName("retirar-ficha").setDescription("[STAFF] Retira ficha de serviço Roblox do inventário de alguém")
+      .addUserOption((opt) => opt.setName("usuario").setDescription("De quem retirar").setRequired(true))
+      .addIntegerOption((opt) => opt.setName("quantidade").setDescription("Quantas fichas (padrão: 1)").setRequired(false)),
 
     new SlashCommandBuilder()
-      .setName("lockdown").setDescription("[STAFF] Ativa o lockdown do servidor")
-      .addStringOption((opt) => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
+      .setName("lockdown").setDescription("[STAFF] Bloqueia todos os canais do servidor")
+      .addStringOption((opt) => opt.setName("motivo").setDescription("Motivo do lockdown").setRequired(false)),
 
-    new SlashCommandBuilder().setName("unlockdown").setDescription("[STAFF] Desativa o lockdown"),
-    new SlashCommandBuilder().setName("esconder-canal").setDescription("[STAFF] Torna o canal invisível para membros"),
-    new SlashCommandBuilder().setName("mostrar-canal").setDescription("[STAFF] Torna o canal visível novamente"),
+    new SlashCommandBuilder().setName("unlockdown").setDescription("[STAFF] Desbloqueia todos os canais do servidor"),
 
-    new SlashCommandBuilder()
-      .setName("lock").setDescription("[STAFF] Bloqueia envio de mensagens no canal")
-      .addStringOption((opt) => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
-
-    new SlashCommandBuilder().setName("unlock").setDescription("[STAFF] Desbloqueia o canal"),
+    new SlashCommandBuilder().setName("esconder-canal").setDescription("[STAFF] Esconde o canal atual"),
+    new SlashCommandBuilder().setName("mostrar-canal").setDescription("[STAFF] Mostra o canal atual"),
 
     new SlashCommandBuilder()
-      .setName("slowmode").setDescription("[STAFF] Ativa modo lento no canal")
+      .setName("lock").setDescription("[STAFF] Bloqueia o canal atual")
+      .addStringOption((opt) => opt.setName("motivo").setDescription("Motivo do bloqueio").setRequired(false)),
+
+    new SlashCommandBuilder().setName("unlock").setDescription("[STAFF] Desbloqueia o canal atual"),
+
+    new SlashCommandBuilder()
+      .setName("slowmode").setDescription("[STAFF] Define o modo lento do canal")
       .addIntegerOption((opt) => opt.setName("segundos").setDescription("Segundos (0 para desativar)").setRequired(true)),
 
-    new SlashCommandBuilder().setName("painel-ticket").setDescription("[STAFF] Envia o painel de ticket no canal configurado"),
-    new SlashCommandBuilder().setName("fechar-ticket").setDescription("[STAFF] Fecha o ticket atual e salva o transcript"),
+    new SlashCommandBuilder().setName("painel-ticket").setDescription("[STAFF] Envia o painel de tickets no canal configurado"),
+    new SlashCommandBuilder().setName("painel-avaliacao").setDescription("[STAFF] Envia o painel de avaliação de staff no canal configurado"),
 
-  ].map((cmd) => cmd.toJSON());
+    new SlashCommandBuilder().setName("fechar-ticket").setDescription("Fecha o ticket atual"),
+  ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
+
   try {
+    console.log("Started refreshing application (/) commands.");
     await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-    console.log("✅ Comandos registrados!");
-  } catch (err) { console.error("[ERRO COMANDOS]", err.message); }
+    console.log("Successfully reloaded application (/) commands.");
+  } catch (error) {
+    console.error(error);
+  }
+
+  // Envia o painel de avaliação ao iniciar o bot
+  const guild = client.guilds.cache.get(GUILD_ID);
+  if (guild) {
+    await enviarPainelAvaliacao(guild);
+  }
 });
 
-// ============================================================
-// MENSAGENS
-// ============================================================
 client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.guild) return;
+  if (message.author.bot) return;
 
-  if (message.channel.id === CANAL_SUGESTOES_ID) {
+  // Anti-spam de comandos
+  if (message.content.startsWith("/")) {
+    const agora = Date.now();
+    if (client.lastCommand && agora - client.lastCommand < 1000) {
+      try { await message.delete(); } catch {}
+      const m = await message.channel.send("❌ Calma aí, spammer! Espere um pouco para usar comandos.");
+      setTimeout(() => m.delete().catch(() => {}), 3000);
+      return;
+    }
+    client.lastCommand = agora;
+  }
+
+  // Anti-flood
+  if (!client.floodUsers) client.floodUsers = {};
+  const user = client.floodUsers[message.author.id] || { count: 0, timer: null };
+  user.count++;
+  if (user.timer) clearTimeout(user.timer);
+  user.timer = setTimeout(() => {
+    delete client.floodUsers[message.author.id];
+  }, 5000);
+  client.floodUsers[message.author.id] = user;
+
+  if (user.count > 5) {
+    try { await message.delete(); } catch {}
     try {
-      await message.react("✅");
-      await message.reply("Certo, iremos ver se conseguimos o mais rápido possível!");
-    } catch {}
+      await message.member.timeout(60 * 1000, "Automod: flood");
+      await message.channel.send(`⚠️ ${message.author}, pare de floodar! Você foi mutado por 1 minuto.`);
+      await enviarLogMod(message.guild, new EmbedBuilder()
+        .setTitle("🌊 Flood Detectado").setColor("Red")
+        .addFields({ name: "Usuário", value: `${message.author.tag} (\`${message.author.id}\`)` }, { name: "Canal", value: `<#${message.channel.id}>` }, { name: "Mensagens", value: `${user.count}` }, { name: "Duração", value: "1 minuto" })
+        .setTimestamp());
+    } catch (err) { console.error("[ERRO MUTE FLOOD]", err.message); }
     return;
   }
 
-  // ---- _clear ----
-  if (message.content.startsWith("_clear")) {
-    if (!temCargoMod(message.member)) return;
-    const args = message.content.split(" ");
-    const qtd  = Math.min(parseInt(args[1]) || 10, 1000);
-    try {
-      await message.delete().catch(() => {});
-      let restante = qtd, deletadas = 0;
-      while (restante > 0) {
-        const lote    = Math.min(restante, 100);
-        const msgs    = await message.channel.messages.fetch({ limit: lote });
-        if (msgs.size === 0) break;
-        const recentes = msgs.filter((m) => Date.now() - m.createdTimestamp < 14 * 24 * 60 * 60 * 1000);
-        if (recentes.size === 0) break;
-        const result  = await message.channel.bulkDelete(recentes, true).catch(() => null);
-        const count   = result ? result.size : 0;
-        deletadas    += count;
-        restante     -= count;
-        if (count < lote) break;
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-      const aviso = await message.channel.send(`✅ **${deletadas}** mensagens apagadas!`);
-      setTimeout(() => aviso.delete().catch(() => {}), 3000);
-      await enviarLogMod(message.guild, new EmbedBuilder()
-        .setTitle("🗑️ Mensagens Apagadas (_clear)").setColor("Red")
-        .addFields({ name: "Staff", value: `${message.author.tag}` }, { name: "Canal", value: `${message.channel.name}` }, { name: "Quantidade", value: `${deletadas}` })
-        .setTimestamp());
-    } catch (err) {
-      console.error("[ERRO _clear]", err.message);
-      const m = await message.channel.send("❌ Erro ao apagar mensagens.");
-      setTimeout(() => m.delete().catch(() => {}), 3000);
-    }
+  // Anti-caps
+  const upperCaseChars = (message.content.match(/[A-Z]/g) || []).length;
+  const totalChars     = message.content.replace(/[^a-zA-Z]/g, "").length;
+  if (totalChars > 10 && (upperCaseChars / totalChars) > 0.7) {
+    try { await message.delete(); } catch {}
+    const m = await message.channel.send(`❌ ${message.author}, por favor, não use CAPS LOCK.`);
+    setTimeout(() => m.delete().catch(() => {}), 3000);
     return;
+  }
+
+  // Anti-everyone/here
+  if (message.content.includes("@everyone") || message.content.includes("@here")) {
+    if (!message.member.permissions.has(PermissionFlagsBits.MentionEveryone)) {
+      try { await message.delete(); } catch {}
+      const m = await message.channel.send(`❌ ${message.author}, você não pode mencionar @everyone ou @here.`);
+      setTimeout(() => m.delete().catch(() => {}), 3000);
+      return;
+    }
+  }
+
+  // Anti-emoji spam
+  const emojis = (message.content.match(/<a?:\w+:\d+>/g) || []).length;
+  if (emojis > 5) {
+    try { await message.delete(); } catch {}
+    const m = await message.channel.send(`❌ ${message.author}, por favor, não use tantos emojis.`);
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+    return;
+  }
+
+  // Anti-sticker
+  if (message.stickers.size > 0) {
+    try { await message.delete(); } catch {}
+    const m = await message.channel.send(`❌ ${message.author}, stickers não são permitidos.`);
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+    return;
+  }
+
+  // Anti-anexo
+  if (message.attachments.size > 0) {
+    if (!message.member.permissions.has(PermissionFlagsBits.AttachFiles)) {
+      try { await message.delete(); } catch {}
+      const m = await message.channel.send(`❌ ${message.author}, você não pode enviar anexos.`);
+      setTimeout(() => m.delete().catch(() => {}), 3000);
+      return;
+    }
+  }
+
+  // Anti-webhook
+  if (message.webhookId) {
+    try { await message.delete(); } catch {}
+    const m = await message.channel.send(`❌ ${message.author}, webhooks não são permitidos.`);
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+    return;
+  }
+
+  // Anti-token
+  const tokenRegex = /[MN][A-Za-z0-9_\-]{23}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27}/g;
+  if (tokenRegex.test(message.content)) {
+    try { await message.delete(); } catch {}
+    const m = await message.channel.send(`❌ ${message.author}, tokens de bot não são permitidos.`);
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+    return;
+  }
+
+  // Anti-ip
+  const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/g;
+  if (ipRegex.test(message.content)) {
+    try { await message.delete(); } catch {}
+    const m = await message.channel.send(`❌ ${message.author}, endereços IP não são permitidos.`);
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+    return;
+  }
+
+  // Anti-discord invite
+  const discordInviteRegex = /(discord\.gg\/|discordapp\.com\/invite\/)([a-zA-Z0-9]+)/g;
+  if (discordInviteRegex.test(message.content)) {
+    if (!message.member.permissions.has(PermissionFlagsBits.CreateInstantInvite)) {
+      try { await message.delete(); } catch {}
+      const m = await message.channel.send(`❌ ${message.author}, convites do Discord não são permitidos.`);
+      setTimeout(() => m.delete().catch(() => {}), 3000);
+      return;
+    }
+  }
+
+  // Anti-mass mention
+  if (message.mentions.users.size > 5 || message.mentions.roles.size > 3) {
+    try { await message.delete(); } catch {}
+    const m = await message.channel.send(`❌ ${message.author}, por favor, não mencione tantas pessoas/cargos.`);
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+    return;
+  }
+
+  // Anti-everyone/here
+  if (message.content.includes("@everyone") || message.content.includes("@here")) {
+    if (!message.member.permissions.has(PermissionFlagsBits.MentionEveryone)) {
+      try { await message.delete(); } catch {}
+      const m = await message.channel.send(`❌ ${message.author}, você não pode mencionar @everyone ou @here.`);
+      setTimeout(() => m.delete().catch(() => {}), 3000);
+      return;
+    }
+  }
+
+  // Anti-spoiler
+  const spoilerRegex = /\|\|.+?\|\|/g;
+  if (spoilerRegex.test(message.content)) {
+    if (!message.member.permissions.has(PermissionFlagsBits.SendMessages)) {
+      try { await message.delete(); } catch {}
+      const m = await message.channel.send(`❌ ${message.author}, você não pode enviar spoilers.`);
+      setTimeout(() => m.delete().catch(() => {}), 3000);
+      return;
+    }
   }
 
   const isStaff = message.member.roles.cache.some((r) => CARGOS_ISENTOS.includes(r.id));
@@ -441,6 +588,42 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- BOTÕES ----
   if (interaction.isButton()) {
+
+    if (interaction.customId === "abrir_modal_avaliacao") {
+      const modal = new ModalBuilder()
+        .setCustomId("modal_avaliacao_staff")
+        .setTitle("Avaliação de Staff");
+
+      const staffNameInput = new TextInputBuilder()
+        .setCustomId("staff_name_input")
+        .setLabel("Nome do Staff")
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder("Ex: Fulano#1234 ou ID do usuário")
+        .setRequired(true);
+
+      const commentInput = new TextInputBuilder()
+        .setCustomId("comment_input")
+        .setLabel("Seu Comentário")
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder("Descreva sua experiência com o staff...")
+        .setRequired(true);
+
+      const ratingInput = new TextInputBuilder()
+        .setCustomId("rating_input")
+        .setLabel("Nota (de 1 a 5)")
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder("Ex: 5")
+        .setRequired(true);
+
+      const firstActionRow = new ActionRowBuilder().addComponents(staffNameInput);
+      const secondActionRow = new ActionRowBuilder().addComponents(commentInput);
+      const thirdActionRow = new ActionRowBuilder().addComponents(ratingInput);
+
+      modal.addComponents(firstActionRow, secondActionRow, thirdActionRow);
+
+      await interaction.showModal(modal);
+      return;
+    }
 
     if (interaction.customId.startsWith("avaliacao_ticket_")) {
       const nota     = parseInt(interaction.customId.split("_")[2]);
@@ -547,6 +730,42 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
     return;
+  }
+
+  // ---- MODALS ----
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId === "modal_avaliacao_staff") {
+      const staffName = interaction.fields.getTextInputValue("staff_name_input");
+      const comment   = interaction.fields.getTextInputValue("comment_input");
+      const rating    = parseInt(interaction.fields.getTextInputValue("rating_input"));
+
+      if (isNaN(rating) || rating < 1 || rating > 5) {
+        return interaction.reply({ content: "❌ A nota deve ser um número entre 1 e 5.", ephemeral: true });
+      }
+
+      const estrelas = "⭐".repeat(rating);
+
+      const logChannel = await interaction.guild.channels.fetch(CANAL_AVALIACOES_LOGS_ID).catch(() => null);
+
+      if (logChannel) {
+        const embed = new EmbedBuilder()
+          .setTitle("📝 Nova Avaliação de Staff")
+          .setColor("Green")
+          .addFields(
+            { name: "👤 Avaliador", value: `${interaction.user.tag} (${interaction.user.id})` },
+            { name: "🛠️ Staff Avaliado", value: staffName },
+            { name: "⭐ Nota", value: `${estrelas} (${rating}/5)` },
+            { name: "💬 Comentário", value: comment || "Nenhum comentário." }
+          )
+          .setTimestamp();
+
+        await logChannel.send({ embeds: [embed] });
+        await interaction.reply({ content: "✅ Sua avaliação foi enviada com sucesso!", ephemeral: true });
+      } else {
+        await interaction.reply({ content: "❌ Não foi possível encontrar o canal de logs de avaliação. Por favor, contate um administrador.", ephemeral: true });
+      }
+      return;
+    }
   }
 
   // ---- SELECT MENU ----
@@ -724,7 +943,7 @@ client.on("interactionCreate", async (interaction) => {
       try {
         await membro.setNickname(novoApe); inv[itemId]--;
         await interaction.reply(`🏷️ **${interaction.user}** mudou apelido de **${alvo}** para **${novoApe}** por 1h!`);
-        setTimeout(async () => { try { await membro.setNickname(antigo === membro.user.username ? null : antigo); } catch {} }, 3600000);
+        setTimeout(async () => { try { await membro.setNickname(antigo === membro.user.username ? null : antigo); } catch {} }, 60 * 60 * 1000);
         await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🏷️ Apelido Alterado").setColor("Blue").addFields({ name: "Usado por", value: interaction.user.tag }, { name: "Alvo", value: alvo.tag }, { name: "Antigo", value: antigo }, { name: "Novo", value: novoApe }).setTimestamp());
       } catch { await interaction.reply({ content: "❌ Não consegui mudar o apelido!", flags: 64 }); }
     } else if (itemId === "ficha_roblox") {
@@ -944,7 +1163,7 @@ client.on("interactionCreate", async (interaction) => {
     try {
       await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: false });
       await interaction.reply(`🔒 Canal bloqueado! **Motivo:** ${motivo}`);
-      await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Canal Bloqueado").setColor("Orange").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }, { name: "Motivo", value: motivo }).setTimestamp());
+      await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Canal Bloqueado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }, { name: "Motivo", value: motivo }).setTimestamp());
     } catch { await interaction.reply({ content: "❌ Não consegui bloquear.", flags: 64 }); }
   }
 
@@ -973,6 +1192,13 @@ client.on("interactionCreate", async (interaction) => {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     await enviarPainelTicket(interaction.guild);
     await interaction.reply({ content: "✅ Painel de ticket enviado!", flags: 64 });
+  }
+
+  // ---- /painel-avaliacao ----
+  if (interaction.commandName === "painel-avaliacao") {
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
+    await enviarPainelAvaliacao(interaction.guild);
+    await interaction.reply({ content: "✅ Painel de avaliação enviado!", flags: 64 });
   }
 
   // ---- /fechar-ticket ----
