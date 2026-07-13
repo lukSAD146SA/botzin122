@@ -20,16 +20,17 @@ const CANAL_TICKET_PAINEL  = "1509269400774115489";
 const CATEGORIA_TICKETS_ID = "1522720316785295541";
 const CARGO_STAFF_ID       = "1508405150572871720";
 const CARGO_SUPORTE_ID     = "1513399309306036355";
-const CANAL_AVALIACOES_ID  = "1524630141182021682"; // Canal onde a mensagem fixa de avaliação ficará
-const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858"; // Canal onde as avaliações serão enviadas
+const CANAL_AVALIACOES_ID  = "1524630141182021682";
+const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const TAXA_TRANSFERENCIA   = 0.05;
-const MUTE_LINK_MS         = 60 * 1000;
 
 const economia            = {};
 const apostas             = {};
 const inventarios         = {};
 const tickets             = {};
 const avaliacoesPendentes = {};
+const ultimaAvaliacao     = {}; // Guarda timestamp da última avaliação de cada usuário
+const COOLDOWN_AVALIACAO  = 24 * 60 * 60 * 1000; // 24 horas
 
 const CARGOS_ISENTOS   = ["1509304131263926292", "1508405150572871720"];
 const CARGOS_MODERACAO = ["1508405150572871720"];
@@ -46,7 +47,6 @@ const LOJA = [
 // OFUSCADOR LUAU
 // ============================================================
 function ofuscarLuau(codigo) {
-  // Gera nome aleatório de variável
   function nomeAleatorio(tamanho = 8) {
     const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let nome = "_";
@@ -54,22 +54,18 @@ function ofuscarLuau(codigo) {
     return nome;
   }
 
-  // Converte string para escape hex Luau (\\xNN)
   function strParaHex(str) {
     return str.split("").map((c) => `\\${c.charCodeAt(0)}`).join("");
   }
 
-  // Converte o código inteiro para base64 e gera um loader Luau
   const base64 = Buffer.from(codigo).toString("base64");
 
-  // Divide o base64 em chunks pra dificultar análise
   const chunkSize = 20;
   const chunks    = [];
   for (let i = 0; i < base64.length; i += chunkSize) {
     chunks.push(base64.slice(i, i + chunkSize));
   }
 
-  // Gera nomes aleatórios pra variáveis do loader
   const varTabela   = nomeAleatorio();
   const varBase64   = nomeAleatorio();
   const varDecode   = nomeAleatorio();
@@ -79,7 +75,6 @@ function ofuscarLuau(codigo) {
   const varJunk2    = nomeAleatorio();
   const varJunk3    = nomeAleatorio();
 
-  // Lixo aleatório pra confundir
   function gerarLixo() {
     const ops = [
       `local ${nomeAleatorio()} = math.random(1, 9999)`,
@@ -91,7 +86,6 @@ function ofuscarLuau(codigo) {
     return ops[Math.floor(Math.random() * ops.length)];
   }
 
-  // Monta o código ofuscado
   const linhasLixo = Array.from({ length: 6 }, () => gerarLixo());
 
   const codigoOfuscado = `-- ${nomeAleatorio(16)}
@@ -131,21 +125,15 @@ if ${varLoad} then ${varLoad}() end
 }
 
 // ============================================================
-// PALAVRAS GRAVES
+// PALAVRAS GRAVES (ATUALIZADO)
 // ============================================================
 const PALAVRAS_GRAVES = [
   "hitler", "nazista", "nazismo", "nazi",
   "racista", "racismo", "fascista", "fascismo",
   "terrorista", "pedofil", "pedofilo",
   "macaco", "macaca",
+  "b1o", "vendas", "venda", "vender",
 ];
-
-const REGEX_LINK = /(https?:\/\/|discord\.gg\/)/gi;
-
-function contemLinkNaoAutorizado(texto) {
-  REGEX_LINK.lastIndex = 0;
-  return REGEX_LINK.test(texto);
-}
 
 function contemPalavraGrave(texto) {
   return PALAVRAS_GRAVES.some((p) => {
@@ -226,7 +214,7 @@ async function enviarPainelTicket(guild) {
 }
 
 // ============================================================
-// PAINEL DE AVALIAÇÃO STAFF
+// PAINEL DE AVALIAÇÃO STAFF (COM NOVA IMAGEM E COOLDOWN)
 // ============================================================
 async function enviarPainelAvaliacao(guild) {
   try {
@@ -239,10 +227,12 @@ async function enviarPainelAvaliacao(guild) {
 
     const embed = new EmbedBuilder()
       .setTitle("Central de Avaliações Staff")
-      .setDescription("Sua opinião é muito importante para nós! Clique no botão abaixo para avaliar um membro da staff.")
+      .setDescription(`Sua opinião é muito importante para nós! Clique no botão abaixo para avaliar um membro da staff.
+
+🌟 **Você ganha 200 ZéCoins por cada avaliação!** (a cada 24h)`)
       .setColor("Blue")
-      .setImage("https://i.imgur.com/6sSikdc.png") // Você pode mudar esta imagem
-      .setFooter({ text: "Avalie nossa equipe!" });
+      .setImage("https://i.imgur.com/WxAC08v.png")
+      .setFooter({ text: "Avalie nossa equipe e ganhe recompensas!" });
 
     const button = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -393,7 +383,6 @@ client.once("ready", async () => {
     console.error(error);
   }
 
-  // Envia o painel de avaliação ao iniciar o bot
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
     await enviarPainelAvaliacao(guild);
@@ -551,21 +540,10 @@ client.on("messageCreate", async (message) => {
     }
   }
 
+  // ============================================================
+  // PALAVRAS PROIBIDAS (com notificação DM melhorada)
+  // ============================================================
   const isStaff = message.member.roles.cache.some((r) => CARGOS_ISENTOS.includes(r.id));
-
-  if (!isStaff && contemLinkNaoAutorizado(message.content)) {
-    const msgText = message.content;
-    try { await message.delete(); } catch {}
-    try {
-      await message.member.timeout(MUTE_LINK_MS, "Automod: link não autorizado");
-      await message.channel.send(`⚠️ ${message.author}, não é permitido enviar links! Você foi mutado por 1 minuto.`);
-      await enviarLogMod(message.guild, new EmbedBuilder()
-        .setTitle("🔗 Link Bloqueado").setColor("Red")
-        .addFields({ name: "Usuário", value: `${message.author.tag} (\`${message.author.id}\`)` }, { name: "Canal", value: `<#${message.channel.id}>` }, { name: "Mensagem", value: `||${msgText.slice(0, 200)}||` }, { name: "Duração", value: "1 minuto" })
-        .setTimestamp());
-    } catch (err) { console.error("[ERRO MUTE LINK]", err.message); }
-    return;
-  }
 
   if (!isStaff && contemPalavraGrave(message.content)) {
     const msgText = message.content;
@@ -573,11 +551,46 @@ client.on("messageCreate", async (message) => {
     try {
       await message.member.timeout(5 * 60 * 1000, "Automod: conteúdo proibido");
       await message.channel.send(`⚠️ ${message.author}, esse tipo de conteúdo não é permitido aqui! Você foi mutado por 5 minutos.`);
+
+      try {
+        const dmEmbed = new EmbedBuilder()
+          .setTitle("🚫 Você foi mutado por conteúdo proibido")
+          .setColor("Red")
+          .setDescription(`Olá **${message.author.username}**,
+
+Você enviou uma mensagem contendo **palavras ou termos proibidos** no servidor **${message.guild.name}**.
+
+**Mensagem bloqueada:**
+||${msgText.slice(0, 500)}||
+
+**O que aconteceu?**
+• Sua mensagem foi **deletada** automaticamente.
+• Você recebeu um **mute de 5 minutos**.
+
+**Palavras proibidas incluem:** ofensas raciais, discriminação, termos como "b1o", "vendas", etc.
+
+Por favor, respeite as regras da comunidade. Se achar que foi um engano, contate a staff.`)
+          .setFooter({ text: "Scripts SDZ • Moderação Automática" })
+          .setTimestamp();
+        await message.author.send({ embeds: [dmEmbed] });
+        console.log(`[DM] Notificação enviada para ${message.author.tag} sobre conteúdo proibido.`);
+      } catch (dmErr) {
+        console.log(`[DM] Não foi possível enviar DM para ${message.author.tag}: ${dmErr.message}`);
+      }
+
       await enviarLogMod(message.guild, new EmbedBuilder()
         .setTitle("🚫 Conteúdo Proibido").setColor("DarkRed")
-        .addFields({ name: "Usuário", value: `${message.author.tag} (\`${message.author.id}\`)` }, { name: "Canal", value: `<#${message.channel.id}>` }, { name: "Mensagem", value: `||${msgText.slice(0, 200)}||` }, { name: "Duração", value: "5 minutos" })
+        .addFields(
+          { name: "Usuário", value: `${message.author.tag} (\`${message.author.id}\`)` },
+          { name: "Canal", value: `<#${message.channel.id}>` },
+          { name: "Mensagem", value: `||${msgText.slice(0, 200)}||` },
+          { name: "Duração", value: "5 minutos" }
+        )
         .setTimestamp());
-    } catch (err) { console.error("[ERRO MUTE GRAVE]", err.message); }
+    } catch (err) {
+      console.error("[ERRO MUTE GRAVE]", err.message);
+    }
+    return;
   }
 });
 
@@ -590,6 +603,17 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton()) {
 
     if (interaction.customId === "abrir_modal_avaliacao") {
+      // Verifica cooldown antes de abrir o modal
+      const agora = Date.now();
+      const ultima = ultimaAvaliacao[interaction.user.id] || 0;
+      if (agora - ultima < COOLDOWN_AVALIACAO) {
+        const tempoRestante = COOLDOWN_AVALIACAO - (agora - ultima);
+        return interaction.reply({
+          content: `⏳ Você já avaliou recentemente! Aguarde **${formatarTempo(tempoRestante)}** para avaliar novamente e ganhar mais ZéCoins.`,
+          flags: 64
+        });
+      }
+
       const modal = new ModalBuilder()
         .setCustomId("modal_avaliacao_staff")
         .setTitle("Avaliação de Staff");
@@ -637,8 +661,23 @@ client.on("interactionCreate", async (interaction) => {
           .addFields({ name: "👤 Usuário", value: `${interaction.user.tag}` }, { name: "🛠️ Staff", value: pendente.staffTag }, { name: "📂 Categoria", value: pendente.categoria }, { name: "⭐ Avaliação", value: `${estrelas} (${nota}/5)` })
           .setTimestamp());
       }
+
+      // Verifica cooldown antes de dar recompensa
+      const agora = Date.now();
+      const ultima = ultimaAvaliacao[interaction.user.id] || 0;
+      let ganhouCoins = false;
+      if (agora - ultima >= COOLDOWN_AVALIACAO) {
+        const perfil = getPerfil(interaction.user.id);
+        perfil.saldo += 200;
+        ultimaAvaliacao[interaction.user.id] = agora;
+        ganhouCoins = true;
+      }
+
       delete avaliacoesPendentes[interaction.user.id];
-      return interaction.update({ content: `✅ Obrigado pela avaliação! Você deu **${estrelas} (${nota}/5)** para o atendimento.`, embeds: [], components: [] });
+      const mensagem = ganhouCoins
+        ? `✅ Obrigado pela avaliação! Você deu **${estrelas} (${nota}/5)** para o atendimento e ganhou **200 ZéCoins**!`
+        : `✅ Obrigado pela avaliação! Você deu **${estrelas} (${nota}/5)**. (Recompensa não concedida pois você já avaliou nas últimas 24h.)`;
+      return interaction.update({ content: mensagem, embeds: [], components: [] });
     }
 
     if (interaction.customId.startsWith("avaliacao_chat_")) {
@@ -655,7 +694,22 @@ client.on("interactionCreate", async (interaction) => {
           .addFields({ name: "👤 Avaliado por", value: `${interaction.user.tag}` }, { name: "🛠️ Staff", value: staffUser ? `${staffUser.tag}` : `ID: ${staffId}` }, { name: "⭐ Nota", value: `${estrelas} (${nota}/5)` })
           .setTimestamp()] });
       }
-      return interaction.update({ content: `✅ Avaliação enviada! Você deu **${estrelas} (${nota}/5)**.`, embeds: [], components: [] });
+
+      // Verifica cooldown
+      const agora = Date.now();
+      const ultima = ultimaAvaliacao[interaction.user.id] || 0;
+      let ganhouCoins = false;
+      if (agora - ultima >= COOLDOWN_AVALIACAO) {
+        const perfil = getPerfil(interaction.user.id);
+        perfil.saldo += 200;
+        ultimaAvaliacao[interaction.user.id] = agora;
+        ganhouCoins = true;
+      }
+
+      const mensagem = ganhouCoins
+        ? `✅ Avaliação enviada! Você deu **${estrelas} (${nota}/5)** e ganhou **200 ZéCoins**!`
+        : `✅ Avaliação enviada! Você deu **${estrelas} (${nota}/5)**. (Recompensa não concedida pois você já avaliou nas últimas 24h.)`;
+      return interaction.update({ content: mensagem, embeds: [], components: [] });
     }
 
     if (interaction.customId === "reivindicar_ticket") {
@@ -760,7 +814,23 @@ client.on("interactionCreate", async (interaction) => {
           .setTimestamp();
 
         await logChannel.send({ embeds: [embed] });
-        await interaction.reply({ content: "✅ Sua avaliação foi enviada com sucesso!", ephemeral: true });
+
+        // Verifica cooldown e dá recompensa se possível
+        const agora = Date.now();
+        const ultima = ultimaAvaliacao[interaction.user.id] || 0;
+        let ganhouCoins = false;
+        if (agora - ultima >= COOLDOWN_AVALIACAO) {
+          const perfil = getPerfil(interaction.user.id);
+          perfil.saldo += 200;
+          ultimaAvaliacao[interaction.user.id] = agora;
+          ganhouCoins = true;
+        }
+
+        const mensagem = ganhouCoins
+          ? `✅ Sua avaliação foi enviada com sucesso! Você ganhou **200 ZéCoins** pela sua participação.`
+          : `✅ Sua avaliação foi enviada com sucesso! (Recompensa não concedida pois você já avaliou nas últimas 24h.)`;
+
+        await interaction.reply({ content: mensagem, ephemeral: true });
       } else {
         await interaction.reply({ content: "❌ Não foi possível encontrar o canal de logs de avaliação. Por favor, contate um administrador.", ephemeral: true });
       }
@@ -1016,12 +1086,23 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- /avaliar ----
   if (interaction.commandName === "avaliar") {
+    // Verifica cooldown antes de abrir as opções de avaliação
+    const agora = Date.now();
+    const ultima = ultimaAvaliacao[interaction.user.id] || 0;
+    if (agora - ultima < COOLDOWN_AVALIACAO) {
+      const tempoRestante = COOLDOWN_AVALIACAO - (agora - ultima);
+      return interaction.reply({
+        content: `⏳ Você já avaliou recentemente! Aguarde **${formatarTempo(tempoRestante)}** para avaliar novamente e ganhar mais ZéCoins.`,
+        flags: 64
+      });
+    }
+
     const staff = interaction.options.getUser("staff");
     if (staff.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se avaliar!", flags: 64 });
     if (staff.bot) return interaction.reply({ content: "❌ Não pode avaliar um bot!", flags: 64 });
     const embed = new EmbedBuilder()
       .setTitle("⭐ Avaliar Staff").setColor("Gold")
-      .setDescription(`Você está avaliando **${staff.username}** pelo atendimento no chat.\n\nClique em uma estrela abaixo:`)
+      .setDescription(`Você está avaliando **${staff.username}** pelo atendimento no chat.\n\nClique em uma estrela abaixo:\n\n🌟 **Você ganha 200 ZéCoins por avaliar!** (a cada 24h)`)
       .setThumbnail(staff.displayAvatarURL())
       .setFooter({ text: "A avaliação será enviada no canal de avaliações" });
     const botoes = new ActionRowBuilder().addComponents(
@@ -1047,7 +1128,6 @@ client.on("interactionCreate", async (interaction) => {
     try {
       const ofuscado = ofuscarLuau(codigo);
 
-      // Manda como arquivo .lua pra não poluir o chat
       const buffer = Buffer.from(ofuscado, "utf-8");
 
       const embed = new EmbedBuilder()
