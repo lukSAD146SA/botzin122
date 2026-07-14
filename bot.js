@@ -29,7 +29,8 @@ const apostas             = {};
 const inventarios         = {};
 const tickets             = {};
 const avaliacoesPendentes = {};
-const ultimaAvaliacao     = {}; // Guarda timestamp da última avaliação de cada usuário
+const ultimaAvaliacao     = {};
+const sorteExtraAtivo     = {}; // Guarda quem tem sorte extra ativa
 const COOLDOWN_AVALIACAO  = 24 * 60 * 60 * 1000; // 24 horas
 
 const CARGOS_ISENTOS   = ["1509304131263926292", "1508405150572871720"];
@@ -40,7 +41,8 @@ const LOJA = [
   { id: "silenciador",  nome: "🔇 Silenciador",               preco: 5000,  tipo: "item", descricao: "Muta alguém por 5 minutos." },
   { id: "apelido",      nome: "🏷️ Apelido",                   preco: 1000,  tipo: "item", descricao: "Muda o apelido de alguém por 1h." },
   { id: "caixa",        nome: "🎁 Caixa Misteriosa",          preco: 5000,  tipo: "item", descricao: "Ganhe entre 100 e 10.000 ZéCoins." },
-  { id: "ficha_roblox", nome: "🎟️ Ficha de Serviço Roblox",  preco: 15000, tipo: "item", descricao: "Ficha para serviços Roblox. Abra um ticket para usar!" },
+  { id: "ficha_roblox", nome: "🎟️ Ficha de Serviço Roblox",  preco: 12000, tipo: "item", descricao: "Ficha para serviços Roblox. Abra um ticket para usar!" }, // REDUZIDO
+  { id: "sorte_extra",  nome: "🍀 Sorte Extra",               preco: 1000,  tipo: "item", descricao: "Ganha 50% de bônus no /diario por 24h!" },
 ];
 
 // ============================================================
@@ -52,10 +54,6 @@ function ofuscarLuau(codigo) {
     let nome = "_";
     for (let i = 0; i < tamanho; i++) nome += chars[Math.floor(Math.random() * chars.length)];
     return nome;
-  }
-
-  function strParaHex(str) {
-    return str.split("").map((c) => `\\${c.charCodeAt(0)}`).join("");
   }
 
   const base64 = Buffer.from(codigo).toString("base64");
@@ -125,7 +123,7 @@ if ${varLoad} then ${varLoad}() end
 }
 
 // ============================================================
-// PALAVRAS GRAVES (ATUALIZADO)
+// PALAVRAS PROIBIDAS
 // ============================================================
 const PALAVRAS_GRAVES = [
   "hitler", "nazista", "nazismo", "nazi",
@@ -214,7 +212,7 @@ async function enviarPainelTicket(guild) {
 }
 
 // ============================================================
-// PAINEL DE AVALIAÇÃO STAFF (COM NOVA IMAGEM E COOLDOWN)
+// PAINEL DE AVALIAÇÃO STAFF
 // ============================================================
 async function enviarPainelAvaliacao(guild) {
   try {
@@ -227,9 +225,7 @@ async function enviarPainelAvaliacao(guild) {
 
     const embed = new EmbedBuilder()
       .setTitle("Central de Avaliações Staff")
-      .setDescription(`Sua opinião é muito importante para nós! Clique no botão abaixo para avaliar um membro da staff.
-
-🌟 **Você ganha 200 ZéCoins por cada avaliação!** (a cada 24h)`)
+      .setDescription(`Sua opinião é muito importante para nós! Clique no botão abaixo para avaliar um membro da staff.\n\n🌟 **Você ganha 200 ZéCoins por cada avaliação!** (a cada 24h)`)
       .setColor("Blue")
       .setImage("https://i.imgur.com/WxAC08v.png")
       .setFooter({ text: "Avalie nossa equipe e ganhe recompensas!" });
@@ -371,6 +367,10 @@ client.once("ready", async () => {
     new SlashCommandBuilder().setName("painel-avaliacao").setDescription("[STAFF] Envia o painel de avaliação de staff no canal configurado"),
 
     new SlashCommandBuilder().setName("fechar-ticket").setDescription("Fecha o ticket atual"),
+
+    // NOVO COMANDO STAFF
+    new SlashCommandBuilder()
+      .setName("staff-ver-moedas").setDescription("[STAFF] Mostra todos os membros com ZéCoins no servidor"),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -392,19 +392,9 @@ client.once("ready", async () => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  // Anti-spam de comandos
-  if (message.content.startsWith("/")) {
-    const agora = Date.now();
-    if (client.lastCommand && agora - client.lastCommand < 1000) {
-      try { await message.delete(); } catch {}
-      const m = await message.channel.send("❌ Calma aí, spammer! Espere um pouco para usar comandos.");
-      setTimeout(() => m.delete().catch(() => {}), 3000);
-      return;
-    }
-    client.lastCommand = agora;
-  }
-
-  // Anti-flood
+  // ============================================================
+  // ANTI-SPAM / FLOOD
+  // ============================================================
   if (!client.floodUsers) client.floodUsers = {};
   const user = client.floodUsers[message.author.id] || { count: 0, timer: null };
   user.count++;
@@ -427,121 +417,32 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Anti-caps
-  const upperCaseChars = (message.content.match(/[A-Z]/g) || []).length;
-  const totalChars     = message.content.replace(/[^a-zA-Z]/g, "").length;
-  if (totalChars > 10 && (upperCaseChars / totalChars) > 0.7) {
-    try { await message.delete(); } catch {}
-    const m = await message.channel.send(`❌ ${message.author}, por favor, não use CAPS LOCK.`);
-    setTimeout(() => m.delete().catch(() => {}), 3000);
-    return;
-  }
-
-  // Anti-everyone/here
+  // ============================================================
+  // @EVERYONE / @HERE (APENAS SE NÃO TIVER CARGO DE SUPORTE)
+  // ============================================================
   if (message.content.includes("@everyone") || message.content.includes("@here")) {
-    if (!message.member.permissions.has(PermissionFlagsBits.MentionEveryone)) {
+    if (!message.member.roles.cache.has(CARGO_SUPORTE_ID)) {
       try { await message.delete(); } catch {}
       const m = await message.channel.send(`❌ ${message.author}, você não pode mencionar @everyone ou @here.`);
-      setTimeout(() => m.delete().catch(() => {}), 3000);
-      return;
-    }
-  }
-
-  // Anti-emoji spam
-  const emojis = (message.content.match(/<a?:\w+:\d+>/g) || []).length;
-  if (emojis > 5) {
-    try { await message.delete(); } catch {}
-    const m = await message.channel.send(`❌ ${message.author}, por favor, não use tantos emojis.`);
-    setTimeout(() => m.delete().catch(() => {}), 3000);
-    return;
-  }
-
-  // Anti-sticker
-  if (message.stickers.size > 0) {
-    try { await message.delete(); } catch {}
-    const m = await message.channel.send(`❌ ${message.author}, stickers não são permitidos.`);
-    setTimeout(() => m.delete().catch(() => {}), 3000);
-    return;
-  }
-
-  // Anti-anexo
-  if (message.attachments.size > 0) {
-    if (!message.member.permissions.has(PermissionFlagsBits.AttachFiles)) {
-      try { await message.delete(); } catch {}
-      const m = await message.channel.send(`❌ ${message.author}, você não pode enviar anexos.`);
-      setTimeout(() => m.delete().catch(() => {}), 3000);
-      return;
-    }
-  }
-
-  // Anti-webhook
-  if (message.webhookId) {
-    try { await message.delete(); } catch {}
-    const m = await message.channel.send(`❌ ${message.author}, webhooks não são permitidos.`);
-    setTimeout(() => m.delete().catch(() => {}), 3000);
-    return;
-  }
-
-  // Anti-token
-  const tokenRegex = /[MN][A-Za-z0-9_\-]{23}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27}/g;
-  if (tokenRegex.test(message.content)) {
-    try { await message.delete(); } catch {}
-    const m = await message.channel.send(`❌ ${message.author}, tokens de bot não são permitidos.`);
-    setTimeout(() => m.delete().catch(() => {}), 3000);
-    return;
-  }
-
-  // Anti-ip
-  const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/g;
-  if (ipRegex.test(message.content)) {
-    try { await message.delete(); } catch {}
-    const m = await message.channel.send(`❌ ${message.author}, endereços IP não são permitidos.`);
-    setTimeout(() => m.delete().catch(() => {}), 3000);
-    return;
-  }
-
-  // Anti-discord invite
-  const discordInviteRegex = /(discord\.gg\/|discordapp\.com\/invite\/)([a-zA-Z0-9]+)/g;
-  if (discordInviteRegex.test(message.content)) {
-    if (!message.member.permissions.has(PermissionFlagsBits.CreateInstantInvite)) {
-      try { await message.delete(); } catch {}
-      const m = await message.channel.send(`❌ ${message.author}, convites do Discord não são permitidos.`);
-      setTimeout(() => m.delete().catch(() => {}), 3000);
-      return;
-    }
-  }
-
-  // Anti-mass mention
-  if (message.mentions.users.size > 5 || message.mentions.roles.size > 3) {
-    try { await message.delete(); } catch {}
-    const m = await message.channel.send(`❌ ${message.author}, por favor, não mencione tantas pessoas/cargos.`);
-    setTimeout(() => m.delete().catch(() => {}), 3000);
-    return;
-  }
-
-  // Anti-everyone/here
-  if (message.content.includes("@everyone") || message.content.includes("@here")) {
-    if (!message.member.permissions.has(PermissionFlagsBits.MentionEveryone)) {
-      try { await message.delete(); } catch {}
-      const m = await message.channel.send(`❌ ${message.author}, você não pode mencionar @everyone ou @here.`);
-      setTimeout(() => m.delete().catch(() => {}), 3000);
-      return;
-    }
-  }
-
-  // Anti-spoiler
-  const spoilerRegex = /\|\|.+?\|\|/g;
-  if (spoilerRegex.test(message.content)) {
-    if (!message.member.permissions.has(PermissionFlagsBits.SendMessages)) {
-      try { await message.delete(); } catch {}
-      const m = await message.channel.send(`❌ ${message.author}, você não pode enviar spoilers.`);
       setTimeout(() => m.delete().catch(() => {}), 3000);
       return;
     }
   }
 
   // ============================================================
-  // PALAVRAS PROIBIDAS (com notificação DM melhorada)
+  // ANTI-MASS MENTION (MAIS DE 5 USUÁRIOS OU 3 CARGOS)
+  // ============================================================
+  if (message.mentions.users.size > 5 || message.mentions.roles.size > 3) {
+    if (!temCargoMod(message.member)) {
+      try { await message.delete(); } catch {}
+      const m = await message.channel.send(`❌ ${message.author}, você mencionou muitas pessoas/cargos! Máximo: 5 usuários ou 3 cargos.`);
+      setTimeout(() => m.delete().catch(() => {}), 3000);
+      return;
+    }
+  }
+
+  // ============================================================
+  // PALAVRAS PROIBIDAS (COM MUTE E DM)
   // ============================================================
   const isStaff = message.member.roles.cache.some((r) => CARGOS_ISENTOS.includes(r.id));
 
@@ -556,20 +457,7 @@ client.on("messageCreate", async (message) => {
         const dmEmbed = new EmbedBuilder()
           .setTitle("🚫 Você foi mutado por conteúdo proibido")
           .setColor("Red")
-          .setDescription(`Olá **${message.author.username}**,
-
-Você enviou uma mensagem contendo **palavras ou termos proibidos** no servidor **${message.guild.name}**.
-
-**Mensagem bloqueada:**
-||${msgText.slice(0, 500)}||
-
-**O que aconteceu?**
-• Sua mensagem foi **deletada** automaticamente.
-• Você recebeu um **mute de 5 minutos**.
-
-**Palavras proibidas incluem:** ofensas raciais, discriminação, termos como "b1o", "vendas", etc.
-
-Por favor, respeite as regras da comunidade. Se achar que foi um engano, contate a staff.`)
+          .setDescription(`Olá **${message.author.username}**,\n\nVocê enviou uma mensagem contendo **palavras ou termos proibidos** no servidor **${message.guild.name}**.\n\n**Mensagem bloqueada:**\n||${msgText.slice(0, 500)}||\n\n**O que aconteceu?**\n• Sua mensagem foi **deletada** automaticamente.\n• Você recebeu um **mute de 5 minutos**.\n\n**Palavras proibidas incluem:** ofensas raciais, discriminação, termos como "b1o", "vendas", etc.\n\nPor favor, respeite as regras da comunidade. Se achar que foi um engano, contate a staff.`)
           .setFooter({ text: "Scripts SDZ • Moderação Automática" })
           .setTimestamp();
         await message.author.send({ embeds: [dmEmbed] });
@@ -603,7 +491,6 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton()) {
 
     if (interaction.customId === "abrir_modal_avaliacao") {
-      // Verifica cooldown antes de abrir o modal
       const agora = Date.now();
       const ultima = ultimaAvaliacao[interaction.user.id] || 0;
       if (agora - ultima < COOLDOWN_AVALIACAO) {
@@ -662,7 +549,6 @@ client.on("interactionCreate", async (interaction) => {
           .setTimestamp());
       }
 
-      // Verifica cooldown antes de dar recompensa
       const agora = Date.now();
       const ultima = ultimaAvaliacao[interaction.user.id] || 0;
       let ganhouCoins = false;
@@ -695,7 +581,6 @@ client.on("interactionCreate", async (interaction) => {
           .setTimestamp()] });
       }
 
-      // Verifica cooldown
       const agora = Date.now();
       const ultima = ultimaAvaliacao[interaction.user.id] || 0;
       let ganhouCoins = false;
@@ -815,7 +700,6 @@ client.on("interactionCreate", async (interaction) => {
 
         await logChannel.send({ embeds: [embed] });
 
-        // Verifica cooldown e dá recompensa se possível
         const agora = Date.now();
         const ultima = ultimaAvaliacao[interaction.user.id] || 0;
         let ganhouCoins = false;
@@ -927,9 +811,21 @@ client.on("interactionCreate", async (interaction) => {
     const agora  = Date.now();
     const cd     = 24 * 60 * 60 * 1000;
     if (agora - perfil.ultimoDiario < cd) return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoDiario))}**.`, flags: 64 });
-    const r = Math.floor(Math.random() * 51) + 50;
-    perfil.saldo += r; perfil.ultimoDiario = agora;
-    await interaction.reply(`💰 ${interaction.user} resgatou **${r} ZéCoins**! Saldo: **${perfil.saldo}**`);
+    
+    // Verifica se tem Sorte Extra ativa
+    const temSorte = sorteExtraAtivo[interaction.user.id] && sorteExtraAtivo[interaction.user.id] > Date.now();
+    let r = Math.floor(Math.random() * 51) + 50;
+    let bonus = 0;
+    if (temSorte) {
+      bonus = Math.floor(r * 0.5); // 50% de bônus
+      r += bonus;
+    }
+    
+    perfil.saldo += r; 
+    perfil.ultimoDiario = agora;
+    
+    const msgBonus = temSorte ? ` (com 🍀 Sorte Extra: +${bonus} de bônus!)` : '';
+    await interaction.reply(`💰 ${interaction.user} resgatou **${r} ZéCoins**!${msgBonus} Saldo: **${perfil.saldo}**`);
   }
 
   // ---- /trabalhar ----
@@ -1025,6 +921,11 @@ client.on("interactionCreate", async (interaction) => {
       for (const p of premios) { ac += p.chance; if (s <= ac) { premio = p; break; } }
       getPerfil(interaction.user.id).saldo += premio.valor; inv[itemId]--;
       await interaction.reply({ embeds: [new EmbedBuilder().setTitle("🎁 Caixa Misteriosa!").setColor("Gold").setDescription(`${premio.label}\n\n${interaction.user} ganhou **${premio.valor} ZéCoins**!`).setTimestamp()] });
+    } else if (itemId === "sorte_extra") {
+      // Ativa a Sorte Extra por 24h
+      sorteExtraAtivo[interaction.user.id] = Date.now() + 24 * 60 * 60 * 1000;
+      inv[itemId]--;
+      await interaction.reply(`🍀 **Sorte Extra ativada!** Você ganha 50% de bônus no /diario por 24h!`);
     } else { await interaction.reply({ content: "❌ Item não pode ser usado assim.", flags: 64 }); }
   }
 
@@ -1086,7 +987,6 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- /avaliar ----
   if (interaction.commandName === "avaliar") {
-    // Verifica cooldown antes de abrir as opções de avaliação
     const agora = Date.now();
     const ultima = ultimaAvaliacao[interaction.user.id] || 0;
     if (agora - ultima < COOLDOWN_AVALIACAO) {
@@ -1159,7 +1059,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "ficha") {
     await interaction.reply({ embeds: [new EmbedBuilder()
       .setTitle("🎟️ Ficha de Serviço Roblox").setColor("Aqua")
-      .setDescription("As Fichas de Serviço Roblox são itens especiais que permitem solicitar serviços de upar contas em jogos Roblox.\n\n**Como obter:**\nCompre na loja por **15.000 ZéCoins** usando `/comprar item:ficha_roblox`.\n\n**Como usar:**\nApós adquirir sua ficha, abra um ticket e informe à nossa equipe qual serviço você deseja. A staff fará a retirada da ficha do seu inventário para iniciar o serviço.")
+      .setDescription("As Fichas de Serviço Roblox são itens especiais que permitem solicitar serviços de upar contas em jogos Roblox.\n\n**Como obter:**\nCompre na loja por **12.000 ZéCoins** usando `/comprar item:ficha_roblox`.\n\n**Como usar:**\nApós adquirir sua ficha, abra um ticket e informe à nossa equipe qual serviço você deseja. A staff fará a retirada da ficha do seu inventário para iniciar o serviço.")
       .setFooter({ text: "Adquira já sua ficha e turbine sua conta Roblox!" })], flags: 64 });
   }
 
@@ -1176,6 +1076,91 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply(`✅ ${quantidade} Ficha(s) retirada(s) do inventário de **${user.username}**.`);
     await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🎟️ Ficha Retirada").setColor("Red")
       .addFields({ name: "Staff", value: interaction.user.tag }, { name: "Usuário", value: user.tag }, { name: "Quantidade", value: `${quantidade}` }).setTimestamp());
+  }
+
+  // ---- /staff-ver-moedas (NOVO COMANDO) ----
+  if (interaction.commandName === "staff-ver-moedas") {
+    if (!temCargoMod(interaction.member)) {
+      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando!", flags: 64 });
+    }
+
+    const usuarios = Object.entries(economia).sort(([, a], [, b]) => b.saldo - a.saldo);
+    
+    if (!usuarios.length) {
+      return interaction.reply({ content: "📭 Nenhum usuário tem ZéCoins registrados ainda.", flags: 64 });
+    }
+
+    // Pega todos os membros do servidor para verificar quem ainda está aqui
+    const membros = await interaction.guild.members.fetch();
+    const membroIds = new Set(membros.map(m => m.id));
+
+    // Filtra apenas usuários que ainda estão no servidor
+    const usuariosNoServidor = usuarios.filter(([id]) => membroIds.has(id));
+    
+    if (!usuariosNoServidor.length) {
+      return interaction.reply({ content: "📭 Nenhum usuário do servidor tem ZéCoins registrados.", flags: 64 });
+    }
+
+    // Cria as páginas (10 por página)
+    const pageSize = 10;
+    const totalPages = Math.ceil(usuariosNoServidor.length / pageSize);
+    let currentPage = 0;
+
+    async function criarEmbed(page) {
+      const start = page * pageSize;
+      const end = Math.min(start + pageSize, usuariosNoServidor.length);
+      const pageData = usuariosNoServidor.slice(start, end);
+
+      let descricao = '';
+      for (let i = 0; i < pageData.length; i++) {
+        const [userId, dados] = pageData[i];
+        const pos = start + i + 1;
+        const user = await client.users.fetch(userId).catch(() => null);
+        const nome = user ? user.tag : `ID: ${userId}`;
+        const medalha = pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' : `${pos}º`;
+        descricao += `${medalha} **${nome}** — ${dados.saldo} ZéCoins\n`;
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(`📊 Todos os Membros com ZéCoins`)
+        .setColor("Blue")
+        .setDescription(descricao || "Nenhum usuário encontrado.")
+        .setFooter({ text: `Página ${page + 1}/${totalPages} • Total: ${usuariosNoServidor.length} membros` })
+        .setTimestamp();
+
+      return embed;
+    }
+
+    // Envia a primeira página com botões de navegação
+    const embed = await criarEmbed(0);
+    const botoes = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("staff_moedas_anterior")
+        .setLabel("◀️ Anterior")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(true),
+      new ButtonBuilder()
+        .setCustomId("staff_moedas_proximo")
+        .setLabel("Próximo ▶️")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(totalPages <= 1)
+    );
+
+    await interaction.reply({ 
+      embeds: [embed], 
+      components: [botoes],
+      flags: 64 
+    });
+
+    // Guarda o estado para navegação
+    const messageId = (await interaction.fetchReply()).id;
+    client.staffMoedasPages = client.staffMoedasPages || {};
+    client.staffMoedasPages[messageId] = {
+      userId: interaction.user.id,
+      currentPage: 0,
+      totalPages: totalPages,
+      data: usuariosNoServidor
+    };
   }
 
   // ---- /lockdown ----
@@ -1297,6 +1282,76 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.editReply("✅ Ticket fechado! Canal será deletado em 5 segundos...");
     delete tickets[interaction.channel.id];
     setTimeout(async () => { try { await interaction.channel.delete(); } catch {} }, 5000);
+  }
+});
+
+// ============================================================
+// NAVEGAÇÃO DO /STAFF-VER-MOEDAS
+// ============================================================
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+  
+  if (interaction.customId === "staff_moedas_anterior" || interaction.customId === "staff_moedas_proximo") {
+    const messageId = interaction.message.id;
+    const pageData = client.staffMoedasPages?.[messageId];
+    
+    if (!pageData) {
+      return interaction.reply({ content: "❌ Esta mensagem expirou. Use /staff-ver-moedas novamente.", flags: 64 });
+    }
+    
+    if (interaction.user.id !== pageData.userId) {
+      return interaction.reply({ content: "❌ Apenas quem executou o comando pode navegar.", flags: 64 });
+    }
+
+    let newPage = pageData.currentPage;
+    if (interaction.customId === "staff_moedas_anterior") {
+      newPage = Math.max(0, pageData.currentPage - 1);
+    } else {
+      newPage = Math.min(pageData.totalPages - 1, pageData.currentPage + 1);
+    }
+
+    if (newPage === pageData.currentPage) {
+      return interaction.reply({ content: "❌ Você já está nessa página.", flags: 64 });
+    }
+
+    // Atualiza a página
+    pageData.currentPage = newPage;
+    
+    const start = newPage * 10;
+    const end = Math.min(start + 10, pageData.data.length);
+    const pageItems = pageData.data.slice(start, end);
+
+    let descricao = '';
+    for (let i = 0; i < pageItems.length; i++) {
+      const [userId, dados] = pageItems[i];
+      const pos = start + i + 1;
+      const user = await client.users.fetch(userId).catch(() => null);
+      const nome = user ? user.tag : `ID: ${userId}`;
+      const medalha = pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' : `${pos}º`;
+      descricao += `${medalha} **${nome}** — ${dados.saldo} ZéCoins\n`;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`📊 Todos os Membros com ZéCoins`)
+      .setColor("Blue")
+      .setDescription(descricao || "Nenhum usuário encontrado.")
+      .setFooter({ text: `Página ${newPage + 1}/${pageData.totalPages} • Total: ${pageData.data.length} membros` })
+      .setTimestamp();
+
+    const botoes = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("staff_moedas_anterior")
+        .setLabel("◀️ Anterior")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(newPage === 0),
+      new ButtonBuilder()
+        .setCustomId("staff_moedas_proximo")
+        .setLabel("Próximo ▶️")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(newPage === pageData.totalPages - 1)
+    );
+
+    await interaction.update({ embeds: [embed], components: [botoes] });
   }
 });
 
