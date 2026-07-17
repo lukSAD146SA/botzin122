@@ -1,6 +1,4 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-const { joinVoiceChannel, createAudioPlayer, NoSubscriberBehavior, createAudioResource } = require("@discordjs/voice");
-const { Readable } = require("stream");
 
 const client = new Client({
   intents: [
@@ -9,7 +7,6 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildVoiceStates,
   ],
 });
 
@@ -27,7 +24,8 @@ const CANAL_AVALIACOES_ID  = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const TAXA_TRANSFERENCIA   = 0.05;
 
-const CANAL_VOZ_AUTO_ID    = "1510353414155145349"; // ID da call que você quer
+// Canal de voz removido por enquanto
+// const CANAL_VOZ_AUTO_ID    = "1510353414155145349";
 
 const economia            = {};
 const apostas             = {};
@@ -201,18 +199,6 @@ async function enviarDMPunicao(user, staffTag, acao, motivo) {
   } catch (err) {
     console.log(`[DM] Não foi possível enviar DM para ${user.tag}: ${err.message}`);
   }
-}
-
-// ============================================================
-// FUNÇÃO PARA ÁUDIO MUDO (VOZ AFK) - NÃO USA FFMPEG
-// ============================================================
-function createSilenceStream() {
-  return new Readable({
-    read() {
-      const buffer = Buffer.alloc(4800 * 2); // 0.1s de silêncio
-      this.push(buffer);
-    }
-  });
 }
 
 // ============================================================
@@ -457,47 +443,7 @@ client.once("ready", async () => {
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
     await enviarPainelAvaliacao(guild);
-
-    // ============================================================
-    // CONEXÃO AUTOMÁTICA AO CANAL DE VOZ (AFK)
-    // ============================================================
-    try {
-      const canalVoz = guild.channels.cache.get(CANAL_VOZ_AUTO_ID);
-      if (canalVoz && canalVoz.isVoiceBased()) {
-        const connection = joinVoiceChannel({
-          channelId: canalVoz.id,
-          guildId: guild.id,
-          adapterCreator: guild.voiceAdapterCreator,
-        });
-
-        const player = createAudioPlayer({
-          behaviors: { noSubscriber: NoSubscriberBehavior.Play },
-        });
-
-        const silenceStream = createSilenceStream();
-        const resource = createAudioResource(silenceStream, {
-          inputType: "raw",
-          inlineVolume: false,
-        });
-
-        player.play(resource);
-        connection.subscribe(player);
-
-        if (!client.voiceConnections) client.voiceConnections = new Map();
-        client.voiceConnections.set(guild.id, connection);
-
-        connection.on("disconnect", () => {
-          client.voiceConnections.delete(guild.id);
-          console.log("[VOZ] Desconectado do canal de voz.");
-        });
-
-        console.log(`[VOZ] Conectado ao canal ${canalVoz.name} (ID: ${canalVoz.id})`);
-      } else {
-        console.warn(`[VOZ] Canal de voz ${CANAL_VOZ_AUTO_ID} não encontrado ou não é um canal de voz.`);
-      }
-    } catch (err) {
-      console.error("[ERRO VOZ AUTO]", err.message);
-    }
+    // Conectividade de voz removida
   }
 });
 
