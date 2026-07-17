@@ -27,7 +27,7 @@ const CANAL_AVALIACOES_ID  = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const TAXA_TRANSFERENCIA   = 0.05;
 
-const CANAL_VOZ_AUTO_ID    = "1510353414155145349"; // ID que você pediu
+const CANAL_VOZ_AUTO_ID    = "1510353414155145349"; // ID da call que você quer
 
 const economia            = {};
 const apostas             = {};
@@ -204,7 +204,7 @@ async function enviarDMPunicao(user, staffTag, acao, motivo) {
 }
 
 // ============================================================
-// FUNÇÃO PARA ÁUDIO MUDO (VOZ AFK) - SEM FFMPEG
+// FUNÇÃO PARA ÁUDIO MUDO (VOZ AFK) - NÃO USA FFMPEG
 // ============================================================
 function createSilenceStream() {
   return new Readable({
@@ -461,9 +461,9 @@ client.once("ready", async () => {
     // ============================================================
     // CONEXÃO AUTOMÁTICA AO CANAL DE VOZ (AFK)
     // ============================================================
-    const canalVoz = guild.channels.cache.get(CANAL_VOZ_AUTO_ID);
-    if (canalVoz && canalVoz.isVoiceBased()) {
-      try {
+    try {
+      const canalVoz = guild.channels.cache.get(CANAL_VOZ_AUTO_ID);
+      if (canalVoz && canalVoz.isVoiceBased()) {
         const connection = joinVoiceChannel({
           channelId: canalVoz.id,
           guildId: guild.id,
@@ -471,9 +471,7 @@ client.once("ready", async () => {
         });
 
         const player = createAudioPlayer({
-          behaviors: {
-            noSubscriber: NoSubscriberBehavior.Play,
-          },
+          behaviors: { noSubscriber: NoSubscriberBehavior.Play },
         });
 
         const silenceStream = createSilenceStream();
@@ -494,11 +492,11 @@ client.once("ready", async () => {
         });
 
         console.log(`[VOZ] Conectado ao canal ${canalVoz.name} (ID: ${canalVoz.id})`);
-      } catch (err) {
-        console.error("[ERRO VOZ AUTO]", err.message);
+      } else {
+        console.warn(`[VOZ] Canal de voz ${CANAL_VOZ_AUTO_ID} não encontrado ou não é um canal de voz.`);
       }
-    } else {
-      console.warn(`[VOZ] Canal de voz ${CANAL_VOZ_AUTO_ID} não encontrado ou não é um canal de voz.`);
+    } catch (err) {
+      console.error("[ERRO VOZ AUTO]", err.message);
     }
   }
 });
@@ -1283,8 +1281,6 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   // ---- lockdown, unlockdown, esconder-canal, mostrar-canal, lock, unlock, slowmode, painel-ticket, painel-avaliacao, fechar-ticket ----
-  // (já estão todos implementados acima, mas vou repetir para garantir)
-
   if (interaction.commandName === "lockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const motivo = interaction.options.getString("motivo") || "Sem motivo especificado"; await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let fechados = 0; for (const [, canal] of canais) { if (canal.id === CANAL_AVISO_ID || !canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: false }); fechados++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) { await canalAviso.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: true }); await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔒 SERVIDOR EM LOCKDOWN").setColor("Red").setDescription(`O servidor foi bloqueado.\n\n**Motivo:** ${motivo}`).setTimestamp()] }); } await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Lockdown Ativado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Motivo", value: motivo }, { name: "Canais fechados", value: `${fechados}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown ativado! **${fechados}** canais fechados.`); }
 
   if (interaction.commandName === "unlockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let abertos = 0; for (const [, canal] of canais) { if (!canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: true, ViewChannel: true }); abertos++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔓 LOCKDOWN ENCERRADO").setColor("Green").setDescription("O servidor foi reaberto! Podem falar normalmente.").setTimestamp()] }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Lockdown Desativado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canais abertos", value: `${abertos}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown desativado! **${abertos}** canais reabertos.`); }
@@ -1304,7 +1300,6 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "painel-avaliacao") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await enviarPainelAvaliacao(interaction.guild); await interaction.reply({ content: "✅ Painel de avaliação enviado!", flags: 64 }); }
 
   if (interaction.commandName === "fechar-ticket") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 }); const ticket = tickets[interaction.channel.id]; if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", flags: 64 }); await interaction.deferReply(); const mensagens = await interaction.channel.messages.fetch({ limit: 100 }); const transcript = mensagens.reverse().map((m) => `[${new Date(m.createdTimestamp).toLocaleString("pt-BR")}] ${m.author.tag}: ${m.content || "[anexo/embed]"}`).join("\n"); await enviarLogTicket(interaction.guild, new EmbedBuilder().setTitle("📋 Ticket Fechado").setColor("Red").addFields({ name: "Canal", value: interaction.channel.name }, { name: "Usuário", value: `<@${ticket.userId}>` }, { name: "Categoria", value: ticket.categoria }, { name: "Atendente", value: ticket.staffTag || "Não reivindicado" }, { name: "Fechado por", value: interaction.user.tag }).setTimestamp(), [{ attachment: Buffer.from(transcript, "utf-8"), name: `transcript-${interaction.channel.name}.txt` }]); const usuario = await client.users.fetch(ticket.userId).catch(() => null); if (usuario) await enviarAvaliacaoDM(usuario, ticket.staffTag || "Não identificado", ticket.categoria, interaction.guild); await interaction.editReply("✅ Ticket fechado! Canal será deletado em 5 segundos..."); delete tickets[interaction.channel.id]; setTimeout(async () => { try { await interaction.channel.delete(); } catch {} }, 5000); }
-
 });
 
 // ============================================================
