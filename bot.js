@@ -9,7 +9,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildVoiceStates, // necessário para voz
+    GatewayIntentBits.GuildVoiceStates,
   ],
 });
 
@@ -26,6 +26,8 @@ const CARGO_SUPORTE_ID     = "1513399309306036355";
 const CANAL_AVALIACOES_ID  = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const TAXA_TRANSFERENCIA   = 0.05;
+
+const CANAL_VOZ_AUTO_ID    = "1510353414155145349"; // ID que você pediu
 
 const economia            = {};
 const apostas             = {};
@@ -202,7 +204,7 @@ async function enviarDMPunicao(user, staffTag, acao, motivo) {
 }
 
 // ============================================================
-// FUNÇÃO PARA ÁUDIO MUDO (VOZ AFK)
+// FUNÇÃO PARA ÁUDIO MUDO (VOZ AFK) - SEM FFMPEG
 // ============================================================
 function createSilenceStream() {
   return new Readable({
@@ -440,22 +442,6 @@ client.once("ready", async () => {
           .setRequired(true)
           .setMinValue(1)
       ),
-
-    // Comando: Voz AFK
-    new SlashCommandBuilder()
-      .setName("voz")
-      .setDescription("[STAFF] Entra em um canal de voz e fica AFK")
-      .addChannelOption(opt =>
-        opt.setName("canal")
-          .setDescription("Canal de voz onde o bot vai entrar")
-          .setRequired(true)
-          .addChannelTypes(ChannelType.GuildVoice)
-      )
-      .addBooleanOption(opt =>
-        opt.setName("sair")
-          .setDescription("Se true, o bot sai do canal de voz")
-          .setRequired(false)
-      ),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -471,15 +457,59 @@ client.once("ready", async () => {
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
     await enviarPainelAvaliacao(guild);
+
+    // ============================================================
+    // CONEXÃO AUTOMÁTICA AO CANAL DE VOZ (AFK)
+    // ============================================================
+    const canalVoz = guild.channels.cache.get(CANAL_VOZ_AUTO_ID);
+    if (canalVoz && canalVoz.isVoiceBased()) {
+      try {
+        const connection = joinVoiceChannel({
+          channelId: canalVoz.id,
+          guildId: guild.id,
+          adapterCreator: guild.voiceAdapterCreator,
+        });
+
+        const player = createAudioPlayer({
+          behaviors: {
+            noSubscriber: NoSubscriberBehavior.Play,
+          },
+        });
+
+        const silenceStream = createSilenceStream();
+        const resource = createAudioResource(silenceStream, {
+          inputType: "raw",
+          inlineVolume: false,
+        });
+
+        player.play(resource);
+        connection.subscribe(player);
+
+        if (!client.voiceConnections) client.voiceConnections = new Map();
+        client.voiceConnections.set(guild.id, connection);
+
+        connection.on("disconnect", () => {
+          client.voiceConnections.delete(guild.id);
+          console.log("[VOZ] Desconectado do canal de voz.");
+        });
+
+        console.log(`[VOZ] Conectado ao canal ${canalVoz.name} (ID: ${canalVoz.id})`);
+      } catch (err) {
+        console.error("[ERRO VOZ AUTO]", err.message);
+      }
+    } else {
+      console.warn(`[VOZ] Canal de voz ${CANAL_VOZ_AUTO_ID} não encontrado ou não é um canal de voz.`);
+    }
   }
 });
 
+// ============================================================
+// MENSAGENS (ANTI-SPAM, PALAVRAS PROIBIDAS, ETC.)
+// ============================================================
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  // ============================================================
-  // ANTI-SPAM / FLOOD
-  // ============================================================
+  // Flood
   if (!client.floodUsers) client.floodUsers = {};
   const user = client.floodUsers[message.author.id] || { count: 0, timer: null };
   user.count++;
@@ -502,9 +532,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // ============================================================
-  // @EVERYONE / @HERE (APENAS SE NÃO TIVER CARGO DE SUPORTE)
-  // ============================================================
+  // @everyone/@here
   if (message.content.includes("@everyone") || message.content.includes("@here")) {
     if (!message.member.roles.cache.has(CARGO_SUPORTE_ID)) {
       try { await message.delete(); } catch {}
@@ -514,9 +542,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ============================================================
-  // ANTI-MASS MENTION (MAIS DE 5 USUÁRIOS OU 3 CARGOS)
-  // ============================================================
+  // Mass mention
   if (message.mentions.users.size > 5 || message.mentions.roles.size > 3) {
     if (!temCargoMod(message.member)) {
       try { await message.delete(); } catch {}
@@ -526,17 +552,13 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ============================================================
-  // PALAVRAS PROIBIDAS (COM MUTE - SEM DM AUTOMÁTICA)
-  // ============================================================
+  // Palavras proibidas (sem DM automática)
   const isStaff = message.member.roles.cache.some((r) => CARGOS_ISENTOS.includes(r.id));
-
   if (!isStaff && contemPalavraGrave(message.content)) {
     try { await message.delete(); } catch {}
     try {
       await message.member.timeout(5 * 60 * 1000, "Automod: conteúdo proibido");
       await message.channel.send(`⚠️ ${message.author}, esse tipo de conteúdo não é permitido aqui! Você foi mutado por 5 minutos.`);
-
       await enviarLogMod(message.guild, new EmbedBuilder()
         .setTitle("🚫 Conteúdo Proibido").setColor("DarkRed")
         .addFields(
@@ -554,13 +576,13 @@ client.on("messageCreate", async (message) => {
 });
 
 // ============================================================
-// INTERACTIONS
+// INTERACTIONS (BOTÕES, MODAIS, SELECT MENUS, COMANDOS)
 // ============================================================
 client.on("interactionCreate", async (interaction) => {
 
   // ---- BOTÕES ----
   if (interaction.isButton()) {
-
+    // Modal de avaliação
     if (interaction.customId === "abrir_modal_avaliacao") {
       const agora = Date.now();
       const ultima = ultimaAvaliacao[interaction.user.id] || 0;
@@ -607,6 +629,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    // Avaliação de ticket
     if (interaction.customId.startsWith("avaliacao_ticket_")) {
       const nota     = parseInt(interaction.customId.split("_")[2]);
       const estrelas = "⭐".repeat(nota);
@@ -637,6 +660,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: mensagem, embeds: [], components: [] });
     }
 
+    // Avaliação de chat
     if (interaction.customId.startsWith("avaliacao_chat_")) {
       const partes   = interaction.customId.split("_");
       const nota     = parseInt(partes[2]);
@@ -668,6 +692,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: mensagem, embeds: [], components: [] });
     }
 
+    // Reivindicar ticket
     if (interaction.customId === "reivindicar_ticket") {
       const ticket = tickets[interaction.channel.id];
       if (!ticket) return interaction.reply({ content: "❌ Ticket não encontrado!", flags: 64 });
@@ -692,6 +717,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    // Fechar ticket
     if (interaction.customId === "fechar_ticket") {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 });
       const ticket = tickets[interaction.channel.id];
@@ -713,6 +739,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    // Aposta
     if (interaction.customId === "aposta_aceitar" || interaction.customId === "aposta_recusar") {
       const aposta = apostas[interaction.message.id];
       if (!aposta) return;
@@ -742,7 +769,7 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  // ---- MODALS ----
+  // ---- MODAIS ----
   if (interaction.isModalSubmit()) {
     if (interaction.customId === "modal_avaliacao_staff") {
       const staffName = interaction.fields.getTextInputValue("staff_name_input");
@@ -793,7 +820,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ---- SELECT MENU ----
+  // ---- SELECT MENU (Ticket) ----
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === "ticket_categoria") {
       const categoria = interaction.values[0];
@@ -841,9 +868,10 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
+  // ---- COMANDOS SLASH ----
   if (!interaction.isChatInputCommand()) return;
 
-  // ---- /say ----
+  // --- Comandos existentes ---
   if (interaction.commandName === "say") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const texto = interaction.options.getString("mensagem");
@@ -852,13 +880,11 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ content: "✅ Enviado!", flags: 64 });
   }
 
-  // ---- /avatar ----
   if (interaction.commandName === "avatar") {
     const user = interaction.options.getUser("usuario") || interaction.user;
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle(`Avatar de ${user.username}`).setImage(user.displayAvatarURL({ size: 1024, extension: "png" })).setColor("Blue")] });
   }
 
-  // ---- /video ----
   if (interaction.commandName === "video") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const link   = interaction.options.getString("link");
@@ -876,61 +902,49 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ content: "✅ Anúncio enviado!", flags: 64 });
   }
 
-  // ---- /diario ----
   if (interaction.commandName === "diario") {
     const perfil = getPerfil(interaction.user.id);
     const agora  = Date.now();
     const cd     = 24 * 60 * 60 * 1000;
     if (agora - perfil.ultimoDiario < cd) return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoDiario))}**.`, flags: 64 });
-    
-    // Sorte Extra NÃO se aplica aqui
     const r = Math.floor(Math.random() * 51) + 50;
     perfil.saldo += r; 
     perfil.ultimoDiario = agora;
     await interaction.reply(`💰 ${interaction.user} resgatou **${r} ZéCoins**! Saldo: **${perfil.saldo}**`);
   }
 
-  // ---- /trabalhar ----
   if (interaction.commandName === "trabalhar") {
     const perfil = getPerfil(interaction.user.id);
     const agora  = Date.now();
     const cd     = 60 * 60 * 1000;
     if (agora - perfil.ultimoTrabalho < cd) return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoTrabalho))}**.`, flags: 64 });
-    
     const trabalhos = ["entregou pizza e ganhou", "consertou um computador e faturou", "vendeu um script raro e lucrou", "ajudou um streamer e recebeu", "fez um frila de design e cobrou"];
     const trabalho = trabalhos[Math.floor(Math.random() * trabalhos.length)];
     let ganho = Math.floor(Math.random() * 26) + 15;
-
-    // Verifica Sorte Extra
     const temSorte = sorteExtraAtivo[interaction.user.id] && sorteExtraAtivo[interaction.user.id] > Date.now();
     let bonus = 0;
     if (temSorte) {
-      bonus = Math.floor(ganho * 0.5); // 50% de bônus
+      bonus = Math.floor(ganho * 0.5);
       ganho += bonus;
     }
-
     perfil.saldo += ganho; 
     perfil.ultimoTrabalho = agora;
-    
     const msgBonus = temSorte ? ` (com 🍀 Sorte Extra: +${bonus} de bônus!)` : '';
     await interaction.reply(`💼 ${interaction.user} ${trabalho} **${ganho} ZéCoins**!${msgBonus} Saldo: **${perfil.saldo}**`);
   }
 
-  // ---- /carteira ----
   if (interaction.commandName === "carteira") {
     const user   = interaction.options.getUser("usuario") || interaction.user;
     const perfil = getPerfil(user.id);
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle(`💰 Carteira de ${user.username}`).setDescription(`Saldo: **${perfil.saldo} ZéCoins**`).setColor("Gold").setThumbnail(user.displayAvatarURL())] });
   }
 
-  // ---- /loja ----
   if (interaction.commandName === "loja") {
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle("🛒 Loja ZéCoins").setColor("Purple")
       .setDescription(LOJA.map((i) => `**${i.nome}** — \`${i.preco} ZéCoins\`\nID: \`${i.id}\`${i.descricao ? `\n*${i.descricao}*` : ""}`).join("\n\n"))
       .setFooter({ text: "Use /comprar item:ID para comprar" })] });
   }
 
-  // ---- /comprar ----
   if (interaction.commandName === "comprar") {
     const itemId = interaction.options.getString("item");
     const item   = LOJA.find((i) => i.id === itemId);
@@ -950,7 +964,6 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ---- /inventario ----
   if (interaction.commandName === "inventario") {
     const inv   = getInventario(interaction.user.id);
     const itens = Object.entries(inv).filter(([, q]) => q > 0);
@@ -959,7 +972,6 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle(`🎒 Inventário de ${interaction.user.username}`).setDescription(linhas.join("\n")).setColor("Blue")] });
   }
 
-  // ---- /usar ----
   if (interaction.commandName === "usar") {
     const itemId  = interaction.options.getString("item");
     const alvo    = interaction.options.getUser("usuario");
@@ -1003,7 +1015,6 @@ client.on("interactionCreate", async (interaction) => {
     } else { await interaction.reply({ content: "❌ Item não pode ser usado assim.", flags: 64 }); }
   }
 
-  // ---- /rank ----
   if (interaction.commandName === "rank") {
     const ranking = Object.entries(economia).sort(([, a], [, b]) => b.saldo - a.saldo).slice(0, 10);
     if (!ranking.length) return interaction.reply("Ninguém tem ZéCoins ainda!");
@@ -1014,7 +1025,6 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle("🏆 Ranking ZéCoins").setDescription(linhas.join("\n")).setColor("Gold")] });
   }
 
-  // ---- /transferir ----
   if (interaction.commandName === "transferir") {
     const alvo  = interaction.options.getUser("usuario");
     const valor = interaction.options.getInteger("valor");
@@ -1032,7 +1042,6 @@ client.on("interactionCreate", async (interaction) => {
       .setTimestamp()] });
   }
 
-  // ---- /dar-moedas ----
   if (interaction.commandName === "dar-moedas") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const user = interaction.options.getUser("usuario");
@@ -1042,7 +1051,6 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply(`✅ ${user} recebeu **${qtd} ZéCoins**! Saldo: **${p.saldo}**`);
   }
 
-  // ---- /apostar ----
   if (interaction.commandName === "apostar") {
     const desafiado = interaction.options.getUser("usuario");
     const valor     = interaction.options.getInteger("valor");
@@ -1059,7 +1067,6 @@ client.on("interactionCreate", async (interaction) => {
     setTimeout(async () => { if (apostas[msg.id]) { delete apostas[msg.id]; try { await msg.edit({ content: "⏰ A aposta expirou!", embeds: [], components: [] }); } catch {} } }, 60000);
   }
 
-  // ---- /avaliar ----
   if (interaction.commandName === "avaliar") {
     const agora = Date.now();
     const ultima = ultimaAvaliacao[interaction.user.id] || 0;
@@ -1070,7 +1077,6 @@ client.on("interactionCreate", async (interaction) => {
         flags: 64
       });
     }
-
     const staff = interaction.options.getUser("staff");
     if (staff.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se avaliar!", flags: 64 });
     if (staff.bot) return interaction.reply({ content: "❌ Não pode avaliar um bot!", flags: 64 });
@@ -1089,21 +1095,15 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ embeds: [embed], components: [botoes], flags: 64 });
   }
 
-  // ---- /ofuscar ----
   if (interaction.commandName === "ofuscar") {
     const codigo = interaction.options.getString("codigo");
-
     if (codigo.length > 4000) {
       return interaction.reply({ content: "❌ Código muito grande! Máximo de 4000 caracteres.", flags: 64 });
     }
-
     await interaction.deferReply({ flags: 64 });
-
     try {
       const ofuscado = ofuscarLuau(codigo);
-
       const buffer = Buffer.from(ofuscado, "utf-8");
-
       const embed = new EmbedBuilder()
         .setTitle("🔒 Código Ofuscado!")
         .setColor("Green")
@@ -1118,7 +1118,6 @@ client.on("interactionCreate", async (interaction) => {
         )
         .setFooter({ text: "Scripts SDZ • Ofuscador Luau" })
         .setTimestamp();
-
       await interaction.editReply({
         embeds: [embed],
         files: [{ attachment: buffer, name: "script_ofuscado.lua" }],
@@ -1129,7 +1128,6 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ---- /ficha ----
   if (interaction.commandName === "ficha") {
     await interaction.reply({ embeds: [new EmbedBuilder()
       .setTitle("🎟️ Ficha de Serviço Roblox").setColor("Aqua")
@@ -1137,7 +1135,6 @@ client.on("interactionCreate", async (interaction) => {
       .setFooter({ text: "Adquira já sua ficha e turbine sua conta Roblox!" })], flags: 64 });
   }
 
-  // ---- /retirar-ficha ----
   if (interaction.commandName === "retirar-ficha") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const user       = interaction.options.getUser("usuario");
@@ -1152,36 +1149,21 @@ client.on("interactionCreate", async (interaction) => {
       .addFields({ name: "Staff", value: interaction.user.tag }, { name: "Usuário", value: user.tag }, { name: "Quantidade", value: `${quantidade}` }).setTimestamp());
   }
 
-  // ---- /staff-ver-moedas ----
   if (interaction.commandName === "staff-ver-moedas") {
-    if (!temCargoMod(interaction.member)) {
-      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando!", flags: 64 });
-    }
-
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando!", flags: 64 });
     const usuarios = Object.entries(economia).sort(([, a], [, b]) => b.saldo - a.saldo);
-    
-    if (!usuarios.length) {
-      return interaction.reply({ content: "📭 Nenhum usuário tem ZéCoins registrados ainda.", flags: 64 });
-    }
-
+    if (!usuarios.length) return interaction.reply({ content: "📭 Nenhum usuário tem ZéCoins registrados ainda.", flags: 64 });
     const membros = await interaction.guild.members.fetch();
     const membroIds = new Set(membros.map(m => m.id));
-
     const usuariosNoServidor = usuarios.filter(([id]) => membroIds.has(id));
-    
-    if (!usuariosNoServidor.length) {
-      return interaction.reply({ content: "📭 Nenhum usuário do servidor tem ZéCoins registrados.", flags: 64 });
-    }
-
+    if (!usuariosNoServidor.length) return interaction.reply({ content: "📭 Nenhum usuário do servidor tem ZéCoins registrados.", flags: 64 });
     const pageSize = 10;
     const totalPages = Math.ceil(usuariosNoServidor.length / pageSize);
     let currentPage = 0;
-
     async function criarEmbed(page) {
       const start = page * pageSize;
       const end = Math.min(start + pageSize, usuariosNoServidor.length);
       const pageData = usuariosNoServidor.slice(start, end);
-
       let descricao = '';
       for (let i = 0; i < pageData.length; i++) {
         const [userId, dados] = pageData[i];
@@ -1191,221 +1173,95 @@ client.on("interactionCreate", async (interaction) => {
         const medalha = pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' : `${pos}º`;
         descricao += `${medalha} **${nome}** — ${dados.saldo} ZéCoins\n`;
       }
-
       const embed = new EmbedBuilder()
         .setTitle(`📊 Todos os Membros com ZéCoins`)
         .setColor("Blue")
         .setDescription(descricao || "Nenhum usuário encontrado.")
         .setFooter({ text: `Página ${page + 1}/${totalPages} • Total: ${usuariosNoServidor.length} membros` })
         .setTimestamp();
-
       return embed;
     }
-
     const embed = await criarEmbed(0);
     const botoes = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("staff_moedas_anterior")
-        .setLabel("◀️ Anterior")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(true),
-      new ButtonBuilder()
-        .setCustomId("staff_moedas_proximo")
-        .setLabel("Próximo ▶️")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(totalPages <= 1)
+      new ButtonBuilder().setCustomId("staff_moedas_anterior").setLabel("◀️ Anterior").setStyle(ButtonStyle.Secondary).setDisabled(true),
+      new ButtonBuilder().setCustomId("staff_moedas_proximo").setLabel("Próximo ▶️").setStyle(ButtonStyle.Secondary).setDisabled(totalPages <= 1)
     );
-
-    await interaction.reply({ 
-      embeds: [embed], 
-      components: [botoes],
-      flags: 64 
-    });
-
+    await interaction.reply({ embeds: [embed], components: [botoes], flags: 64 });
     const messageId = (await interaction.fetchReply()).id;
     client.staffMoedasPages = client.staffMoedasPages || {};
-    client.staffMoedasPages[messageId] = {
-      userId: interaction.user.id,
-      currentPage: 0,
-      totalPages: totalPages,
-      data: usuariosNoServidor
-    };
+    client.staffMoedasPages[messageId] = { userId: interaction.user.id, currentPage: 0, totalPages, data: usuariosNoServidor };
   }
-
-  // ============================================================
-  // NOVOS COMANDOS DE MODERAÇÃO: KICK, BAN, MUTE
-  // ============================================================
 
   // ---- /kick ----
   if (interaction.commandName === "kick") {
-    if (!temCargoMod(interaction.member)) {
-      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
-    }
-
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
     const motivo  = interaction.options.getString("motivo") || "Não informado";
-
-    if (usuario.id === interaction.user.id) {
-      return interaction.reply({ content: "❌ Você não pode se expulsar.", flags: 64 });
-    }
-
+    if (usuario.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se expulsar.", flags: 64 });
     const member = await interaction.guild.members.fetch(usuario.id).catch(() => null);
-    if (!member) {
-      return interaction.reply({ content: "❌ Usuário não encontrado no servidor.", flags: 64 });
-    }
-
-    if (!member.kickable) {
-      return interaction.reply({ content: "❌ Não tenho permissão para expulsar este usuário.", flags: 64 });
-    }
-
+    if (!member) return interaction.reply({ content: "❌ Usuário não encontrado no servidor.", flags: 64 });
+    if (!member.kickable) return interaction.reply({ content: "❌ Não tenho permissão para expulsar este usuário.", flags: 64 });
     try {
       await member.kick(`Expulso por ${interaction.user.tag} - Motivo: ${motivo}`);
-      
       await enviarDMPunicao(usuario, interaction.user.tag, "EXPULSO", motivo);
-
-      const embedLog = new EmbedBuilder()
-        .setTitle("👢 Kick")
-        .setColor("Orange")
-        .addFields(
-          { name: "Staff", value: interaction.user.tag },
-          { name: "Usuário", value: usuario.tag },
-          { name: "Motivo", value: motivo }
-        )
-        .setTimestamp();
+      const embedLog = new EmbedBuilder().setTitle("👢 Kick").setColor("Orange").addFields({ name: "Staff", value: interaction.user.tag }, { name: "Usuário", value: usuario.tag }, { name: "Motivo", value: motivo }).setTimestamp();
       await enviarLogMod(interaction.guild, embedLog);
-
       await interaction.reply(`✅ **${usuario.tag}** foi expulso. Motivo: ${motivo}`);
-    } catch (err) {
-      console.error("[ERRO KICK]", err);
-      await interaction.reply({ content: "❌ Erro ao expulsar o usuário.", flags: 64 });
-    }
+    } catch (err) { console.error("[ERRO KICK]", err); await interaction.reply({ content: "❌ Erro ao expulsar o usuário.", flags: 64 }); }
   }
 
   // ---- /ban ----
   if (interaction.commandName === "ban") {
-    if (!temCargoMod(interaction.member)) {
-      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
-    }
-
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
     const motivo  = interaction.options.getString("motivo") || "Não informado";
-
-    if (usuario.id === interaction.user.id) {
-      return interaction.reply({ content: "❌ Você não pode se banir.", flags: 64 });
-    }
-
+    if (usuario.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se banir.", flags: 64 });
     const member = await interaction.guild.members.fetch(usuario.id).catch(() => null);
-    if (member && !member.bannable) {
-      return interaction.reply({ content: "❌ Não tenho permissão para banir este usuário.", flags: 64 });
-    }
-
+    if (member && !member.bannable) return interaction.reply({ content: "❌ Não tenho permissão para banir este usuário.", flags: 64 });
     try {
       await interaction.guild.members.ban(usuario.id, { reason: `Banido por ${interaction.user.tag} - Motivo: ${motivo}` });
-      
       await enviarDMPunicao(usuario, interaction.user.tag, "BANIDO", motivo);
-
-      const embedLog = new EmbedBuilder()
-        .setTitle("🔨 Ban")
-        .setColor("Red")
-        .addFields(
-          { name: "Staff", value: interaction.user.tag },
-          { name: "Usuário", value: usuario.tag },
-          { name: "Motivo", value: motivo }
-        )
-        .setTimestamp();
+      const embedLog = new EmbedBuilder().setTitle("🔨 Ban").setColor("Red").addFields({ name: "Staff", value: interaction.user.tag }, { name: "Usuário", value: usuario.tag }, { name: "Motivo", value: motivo }).setTimestamp();
       await enviarLogMod(interaction.guild, embedLog);
-
       await interaction.reply(`✅ **${usuario.tag}** foi banido. Motivo: ${motivo}`);
-    } catch (err) {
-      console.error("[ERRO BAN]", err);
-      await interaction.reply({ content: "❌ Erro ao banir o usuário.", flags: 64 });
-    }
+    } catch (err) { console.error("[ERRO BAN]", err); await interaction.reply({ content: "❌ Erro ao banir o usuário.", flags: 64 }); }
   }
 
   // ---- /mute ----
   if (interaction.commandName === "mute") {
-    if (!temCargoMod(interaction.member)) {
-      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
-    }
-
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario   = interaction.options.getUser("usuario");
     const duracao   = interaction.options.getInteger("duracao");
     const motivo    = interaction.options.getString("motivo") || "Não informado";
-
-    if (usuario.id === interaction.user.id) {
-      return interaction.reply({ content: "❌ Você não pode se mutar.", flags: 64 });
-    }
-
+    if (usuario.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se mutar.", flags: 64 });
     const member = await interaction.guild.members.fetch(usuario.id).catch(() => null);
-    if (!member) {
-      return interaction.reply({ content: "❌ Usuário não encontrado no servidor.", flags: 64 });
-    }
-
-    if (!member.moderatable) {
-      return interaction.reply({ content: "❌ Não tenho permissão para mutar este usuário.", flags: 64 });
-    }
-
+    if (!member) return interaction.reply({ content: "❌ Usuário não encontrado no servidor.", flags: 64 });
+    if (!member.moderatable) return interaction.reply({ content: "❌ Não tenho permissão para mutar este usuário.", flags: 64 });
     const duracaoMs = duracao * 60 * 1000;
-
     try {
       await member.timeout(duracaoMs, `Mutado por ${interaction.user.tag} - Motivo: ${motivo}`);
-      
       await enviarDMPunicao(usuario, interaction.user.tag, "MUTADO", motivo);
-
-      const embedLog = new EmbedBuilder()
-        .setTitle("🔇 Mute")
-        .setColor("Yellow")
-        .addFields(
-          { name: "Staff", value: interaction.user.tag },
-          { name: "Usuário", value: usuario.tag },
-          { name: "Duração", value: `${duracao} minuto(s)` },
-          { name: "Motivo", value: motivo }
-        )
-        .setTimestamp();
+      const embedLog = new EmbedBuilder().setTitle("🔇 Mute").setColor("Yellow").addFields({ name: "Staff", value: interaction.user.tag }, { name: "Usuário", value: usuario.tag }, { name: "Duração", value: `${duracao} minuto(s)` }, { name: "Motivo", value: motivo }).setTimestamp();
       await enviarLogMod(interaction.guild, embedLog);
-
       await interaction.reply(`✅ **${usuario.tag}** foi mutado por ${duracao} minuto(s). Motivo: ${motivo}`);
-    } catch (err) {
-      console.error("[ERRO MUTE]", err);
-      await interaction.reply({ content: "❌ Erro ao mutar o usuário.", flags: 64 });
-    }
+    } catch (err) { console.error("[ERRO MUTE]", err); await interaction.reply({ content: "❌ Erro ao mutar o usuário.", flags: 64 }); }
   }
 
   // ---- /addmoedas ----
   if (interaction.commandName === "addmoedas") {
-    if (!temCargoMod(interaction.member)) {
-      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
-    }
-
+    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuariosStr = interaction.options.getString("usuarios");
     const quantidade  = interaction.options.getInteger("quantidade");
-
-    // Extrai menções e IDs da string
     const mentionRegex = /<@!?(\d+)>/g;
     const ids = [];
     let match;
-    while ((match = mentionRegex.exec(usuariosStr)) !== null) {
-      ids.push(match[1]);
-    }
-    // Também tenta pegar IDs numéricos soltos
+    while ((match = mentionRegex.exec(usuariosStr)) !== null) ids.push(match[1]);
     const numericIds = usuariosStr.match(/\b\d{17,20}\b/g);
-    if (numericIds) {
-      for (const id of numericIds) {
-        if (!ids.includes(id)) ids.push(id);
-      }
-    }
-
-    if (ids.length === 0) {
-      return interaction.reply({ content: "❌ Nenhum usuário válido encontrado. Use menções ou IDs.", flags: 64 });
-    }
-
-    // Remove duplicatas
+    if (numericIds) { for (const id of numericIds) { if (!ids.includes(id)) ids.push(id); } }
+    if (ids.length === 0) return interaction.reply({ content: "❌ Nenhum usuário válido encontrado. Use menções ou IDs.", flags: 64 });
     const uniqueIds = [...new Set(ids)];
-
-    let sucessos = 0;
-    let falhas = 0;
+    let sucessos = 0, falhas = 0;
     const resultados = [];
-
     for (const id of uniqueIds) {
       try {
         const user = await client.users.fetch(id);
@@ -1418,212 +1274,37 @@ client.on("interactionCreate", async (interaction) => {
         resultados.push(`❌ ID ${id} (usuário não encontrado)`);
       }
     }
-
-    // Log no canal de moderação
-    const embedLog = new EmbedBuilder()
-      .setTitle("💰 Adição em Massa de ZéCoins")
-      .setColor("Green")
-      .addFields(
-        { name: "Staff", value: interaction.user.tag },
-        { name: "Quantidade", value: `${quantidade} por usuário` },
-        { name: "Sucessos", value: `${sucessos}` },
-        { name: "Falhas", value: `${falhas}` }
-      )
-      .setTimestamp();
+    const embedLog = new EmbedBuilder().setTitle("💰 Adição em Massa de ZéCoins").setColor("Green").addFields({ name: "Staff", value: interaction.user.tag }, { name: "Quantidade", value: `${quantidade} por usuário` }, { name: "Sucessos", value: `${sucessos}` }, { name: "Falhas", value: `${falhas}` }).setTimestamp();
     await enviarLogMod(interaction.guild, embedLog);
-
     await interaction.reply({
-      embeds: [new EmbedBuilder()
-        .setTitle("✅ Moedas Adicionadas")
-        .setColor("Green")
-        .setDescription(`**${quantidade} ZéCoins** adicionados a **${sucessos}** usuário(s).\n\n${resultados.join("\n")}`)
-        .setFooter({ text: `Total: ${uniqueIds.length} usuários processados` })
-        .setTimestamp()
-      ],
+      embeds: [new EmbedBuilder().setTitle("✅ Moedas Adicionadas").setColor("Green").setDescription(`**${quantidade} ZéCoins** adicionados a **${sucessos}** usuário(s).\n\n${resultados.join("\n")}`).setFooter({ text: `Total: ${uniqueIds.length} usuários processados` }).setTimestamp()],
       flags: 64
     });
   }
 
-  // ---- /voz ----
-  if (interaction.commandName === "voz") {
-    if (!temCargoMod(interaction.member)) {
-      return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    }
+  // ---- lockdown, unlockdown, esconder-canal, mostrar-canal, lock, unlock, slowmode, painel-ticket, painel-avaliacao, fechar-ticket ----
+  // (já estão todos implementados acima, mas vou repetir para garantir)
 
-    const sair = interaction.options.getBoolean("sair") || false;
-    const canal = interaction.options.getChannel("canal");
+  if (interaction.commandName === "lockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const motivo = interaction.options.getString("motivo") || "Sem motivo especificado"; await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let fechados = 0; for (const [, canal] of canais) { if (canal.id === CANAL_AVISO_ID || !canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: false }); fechados++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) { await canalAviso.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: true }); await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔒 SERVIDOR EM LOCKDOWN").setColor("Red").setDescription(`O servidor foi bloqueado.\n\n**Motivo:** ${motivo}`).setTimestamp()] }); } await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Lockdown Ativado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Motivo", value: motivo }, { name: "Canais fechados", value: `${fechados}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown ativado! **${fechados}** canais fechados.`); }
 
-    if (sair) {
-      const connection = client.voiceConnections?.get(interaction.guild.id);
-      if (connection) {
-        connection.destroy();
-        client.voiceConnections.delete(interaction.guild.id);
-        return interaction.reply({ content: `✅ Desconectado do canal de voz!`, flags: 64 });
-      } else {
-        return interaction.reply({ content: "❌ O bot não está em nenhum canal de voz neste servidor.", flags: 64 });
-      }
-    }
+  if (interaction.commandName === "unlockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let abertos = 0; for (const [, canal] of canais) { if (!canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: true, ViewChannel: true }); abertos++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔓 LOCKDOWN ENCERRADO").setColor("Green").setDescription("O servidor foi reaberto! Podem falar normalmente.").setTimestamp()] }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Lockdown Desativado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canais abertos", value: `${abertos}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown desativado! **${abertos}** canais reabertos.`); }
 
-    if (client.voiceConnections?.has(interaction.guild.id)) {
-      return interaction.reply({ content: "❌ O bot já está em um canal de voz. Use `/voz sair:true` para desconectar.", flags: 64 });
-    }
+  if (interaction.commandName === "esconder-canal") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: false }); await interaction.reply({ content: `✅ Canal escondido!`, flags: 64 }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🙈 Canal Escondido").setColor("Grey").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui esconder.", flags: 64 }); } }
 
-    try {
-      const connection = joinVoiceChannel({
-        channelId: canal.id,
-        guildId: interaction.guild.id,
-        adapterCreator: interaction.guild.voiceAdapterCreator,
-      });
+  if (interaction.commandName === "mostrar-canal") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: true, SendMessages: true }); await interaction.reply({ content: `✅ Canal visível!`, flags: 64 }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("👁️ Canal Revelado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui mostrar.", flags: 64 }); } }
 
-      const player = createAudioPlayer({
-        behaviors: {
-          noSubscriber: NoSubscriberBehavior.Play,
-        },
-      });
+  if (interaction.commandName === "lock") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const motivo = interaction.options.getString("motivo") || "Sem motivo"; try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: false }); await interaction.reply(`🔒 Canal bloqueado! **Motivo:** ${motivo}`); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Canal Bloqueado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }, { name: "Motivo", value: motivo }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui bloquear.", flags: 64 }); } }
 
-      const silenceStream = createSilenceStream();
-      const resource = createAudioResource(silenceStream, {
-        inputType: "raw",
-        inlineVolume: false,
-      });
+  if (interaction.commandName === "unlock") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: true }); await interaction.reply(`🔓 Canal desbloqueado!`); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Canal Desbloqueado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui desbloquear.", flags: 64 }); } }
 
-      player.play(resource);
-      connection.subscribe(player);
+  if (interaction.commandName === "slowmode") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const segundos = interaction.options.getInteger("segundos"); try { await interaction.channel.setRateLimitPerUser(segundos); await interaction.reply(segundos === 0 ? `✅ Modo lento desativado!` : `🐢 Modo lento: **${segundos} segundos** entre mensagens.`); } catch { await interaction.reply({ content: "❌ Não consegui ativar modo lento.", flags: 64 }); } }
 
-      if (!client.voiceConnections) client.voiceConnections = new Map();
-      client.voiceConnections.set(interaction.guild.id, connection);
+  if (interaction.commandName === "painel-ticket") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await enviarPainelTicket(interaction.guild); await interaction.reply({ content: "✅ Painel de ticket enviado!", flags: 64 }); }
 
-      connection.on("disconnect", () => {
-        client.voiceConnections.delete(interaction.guild.id);
-      });
+  if (interaction.commandName === "painel-avaliacao") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await enviarPainelAvaliacao(interaction.guild); await interaction.reply({ content: "✅ Painel de avaliação enviado!", flags: 64 }); }
 
-      await interaction.reply({ content: `✅ Conectado ao canal **${canal.name}**! Ficarei AFK por lá.`, flags: 64 });
-    } catch (err) {
-      console.error("[ERRO VOZ]", err);
-      await interaction.reply({ content: "❌ Erro ao conectar ao canal de voz. Verifique permissões.", flags: 64 });
-    }
-  }
+  if (interaction.commandName === "fechar-ticket") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 }); const ticket = tickets[interaction.channel.id]; if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", flags: 64 }); await interaction.deferReply(); const mensagens = await interaction.channel.messages.fetch({ limit: 100 }); const transcript = mensagens.reverse().map((m) => `[${new Date(m.createdTimestamp).toLocaleString("pt-BR")}] ${m.author.tag}: ${m.content || "[anexo/embed]"}`).join("\n"); await enviarLogTicket(interaction.guild, new EmbedBuilder().setTitle("📋 Ticket Fechado").setColor("Red").addFields({ name: "Canal", value: interaction.channel.name }, { name: "Usuário", value: `<@${ticket.userId}>` }, { name: "Categoria", value: ticket.categoria }, { name: "Atendente", value: ticket.staffTag || "Não reivindicado" }, { name: "Fechado por", value: interaction.user.tag }).setTimestamp(), [{ attachment: Buffer.from(transcript, "utf-8"), name: `transcript-${interaction.channel.name}.txt` }]); const usuario = await client.users.fetch(ticket.userId).catch(() => null); if (usuario) await enviarAvaliacaoDM(usuario, ticket.staffTag || "Não identificado", ticket.categoria, interaction.guild); await interaction.editReply("✅ Ticket fechado! Canal será deletado em 5 segundos..."); delete tickets[interaction.channel.id]; setTimeout(async () => { try { await interaction.channel.delete(); } catch {} }, 5000); }
 
-  // ---- /lockdown ----
-  if (interaction.commandName === "lockdown") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    const motivo  = interaction.options.getString("motivo") || "Sem motivo especificado";
-    await interaction.deferReply({ flags: 64 });
-    const canais  = await interaction.guild.channels.fetch();
-    const everyone = interaction.guild.roles.everyone;
-    let fechados = 0;
-    for (const [, canal] of canais) {
-      if (canal.id === CANAL_AVISO_ID || !canal.isTextBased()) continue;
-      try { await canal.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: false }); fechados++; } catch {}
-    }
-    const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null);
-    if (canalAviso) {
-      await canalAviso.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: true });
-      await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔒 SERVIDOR EM LOCKDOWN").setColor("Red").setDescription(`O servidor foi bloqueado.\n\n**Motivo:** ${motivo}`).setTimestamp()] });
-    }
-    await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Lockdown Ativado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Motivo", value: motivo }, { name: "Canais fechados", value: `${fechados}` }).setTimestamp());
-    await interaction.editReply(`✅ Lockdown ativado! **${fechados}** canais fechados.`);
-  }
-
-  // ---- /unlockdown ----
-  if (interaction.commandName === "unlockdown") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    await interaction.deferReply({ flags: 64 });
-    const canais  = await interaction.guild.channels.fetch();
-    const everyone = interaction.guild.roles.everyone;
-    let abertos = 0;
-    for (const [, canal] of canais) {
-      if (!canal.isTextBased()) continue;
-      try { await canal.permissionOverwrites.edit(everyone, { SendMessages: true, ViewChannel: true }); abertos++; } catch {}
-    }
-    const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null);
-    if (canalAviso) await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔓 LOCKDOWN ENCERRADO").setColor("Green").setDescription("O servidor foi reaberto! Podem falar normalmente.").setTimestamp()] });
-    await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Lockdown Desativado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canais abertos", value: `${abertos}` }).setTimestamp());
-    await interaction.editReply(`✅ Lockdown desativado! **${abertos}** canais reabertos.`);
-  }
-
-  // ---- /esconder-canal ----
-  if (interaction.commandName === "esconder-canal") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    try {
-      await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: false });
-      await interaction.reply({ content: `✅ Canal escondido!`, flags: 64 });
-      await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🙈 Canal Escondido").setColor("Grey").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp());
-    } catch { await interaction.reply({ content: "❌ Não consegui esconder.", flags: 64 }); }
-  }
-
-  // ---- /mostrar-canal ----
-  if (interaction.commandName === "mostrar-canal") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    try {
-      await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: true, SendMessages: true });
-      await interaction.reply({ content: `✅ Canal visível!`, flags: 64 });
-      await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("👁️ Canal Revelado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp());
-    } catch { await interaction.reply({ content: "❌ Não consegui mostrar.", flags: 64 }); }
-  }
-
-  // ---- /lock ----
-  if (interaction.commandName === "lock") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    const motivo = interaction.options.getString("motivo") || "Sem motivo";
-    try {
-      await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: false });
-      await interaction.reply(`🔒 Canal bloqueado! **Motivo:** ${motivo}`);
-      await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Canal Bloqueado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }, { name: "Motivo", value: motivo }).setTimestamp());
-    } catch { await interaction.reply({ content: "❌ Não consegui bloquear.", flags: 64 }); }
-  }
-
-  // ---- /unlock ----
-  if (interaction.commandName === "unlock") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    try {
-      await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: true });
-      await interaction.reply(`🔓 Canal desbloqueado!`);
-      await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Canal Desbloqueado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp());
-    } catch { await interaction.reply({ content: "❌ Não consegui desbloquear.", flags: 64 }); }
-  }
-
-  // ---- /slowmode ----
-  if (interaction.commandName === "slowmode") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    const segundos = interaction.options.getInteger("segundos");
-    try {
-      await interaction.channel.setRateLimitPerUser(segundos);
-      await interaction.reply(segundos === 0 ? `✅ Modo lento desativado!` : `🐢 Modo lento: **${segundos} segundos** entre mensagens.`);
-    } catch { await interaction.reply({ content: "❌ Não consegui ativar modo lento.", flags: 64 }); }
-  }
-
-  // ---- /painel-ticket ----
-  if (interaction.commandName === "painel-ticket") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    await enviarPainelTicket(interaction.guild);
-    await interaction.reply({ content: "✅ Painel de ticket enviado!", flags: 64 });
-  }
-
-  // ---- /painel-avaliacao ----
-  if (interaction.commandName === "painel-avaliacao") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    await enviarPainelAvaliacao(interaction.guild);
-    await interaction.reply({ content: "✅ Painel de avaliação enviado!", flags: 64 });
-  }
-
-  // ---- /fechar-ticket ----
-  if (interaction.commandName === "fechar-ticket") {
-    if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 });
-    const ticket = tickets[interaction.channel.id];
-    if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", flags: 64 });
-    await interaction.deferReply();
-    const mensagens  = await interaction.channel.messages.fetch({ limit: 100 });
-    const transcript = mensagens.reverse().map((m) => `[${new Date(m.createdTimestamp).toLocaleString("pt-BR")}] ${m.author.tag}: ${m.content || "[anexo/embed]"}`).join("\n");
-    await enviarLogTicket(interaction.guild, new EmbedBuilder().setTitle("📋 Ticket Fechado").setColor("Red")
-      .addFields({ name: "Canal", value: interaction.channel.name }, { name: "Usuário", value: `<@${ticket.userId}>` }, { name: "Categoria", value: ticket.categoria }, { name: "Atendente", value: ticket.staffTag || "Não reivindicado" }, { name: "Fechado por", value: interaction.user.tag })
-      .setTimestamp(), [{ attachment: Buffer.from(transcript, "utf-8"), name: `transcript-${interaction.channel.name}.txt` }]);
-    const usuario = await client.users.fetch(ticket.userId).catch(() => null);
-    if (usuario) await enviarAvaliacaoDM(usuario, ticket.staffTag || "Não identificado", ticket.categoria, interaction.guild);
-    await interaction.editReply("✅ Ticket fechado! Canal será deletado em 5 segundos...");
-    delete tickets[interaction.channel.id];
-    setTimeout(async () => { try { await interaction.channel.delete(); } catch {} }, 5000);
-  }
 });
 
 // ============================================================
@@ -1631,36 +1312,19 @@ client.on("interactionCreate", async (interaction) => {
 // ============================================================
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
-  
   if (interaction.customId === "staff_moedas_anterior" || interaction.customId === "staff_moedas_proximo") {
     const messageId = interaction.message.id;
     const pageData = client.staffMoedasPages?.[messageId];
-    
-    if (!pageData) {
-      return interaction.reply({ content: "❌ Esta mensagem expirou. Use /staff-ver-moedas novamente.", flags: 64 });
-    }
-    
-    if (interaction.user.id !== pageData.userId) {
-      return interaction.reply({ content: "❌ Apenas quem executou o comando pode navegar.", flags: 64 });
-    }
-
+    if (!pageData) return interaction.reply({ content: "❌ Esta mensagem expirou. Use /staff-ver-moedas novamente.", flags: 64 });
+    if (interaction.user.id !== pageData.userId) return interaction.reply({ content: "❌ Apenas quem executou o comando pode navegar.", flags: 64 });
     let newPage = pageData.currentPage;
-    if (interaction.customId === "staff_moedas_anterior") {
-      newPage = Math.max(0, pageData.currentPage - 1);
-    } else {
-      newPage = Math.min(pageData.totalPages - 1, pageData.currentPage + 1);
-    }
-
-    if (newPage === pageData.currentPage) {
-      return interaction.reply({ content: "❌ Você já está nessa página.", flags: 64 });
-    }
-
+    if (interaction.customId === "staff_moedas_anterior") newPage = Math.max(0, pageData.currentPage - 1);
+    else newPage = Math.min(pageData.totalPages - 1, pageData.currentPage + 1);
+    if (newPage === pageData.currentPage) return interaction.reply({ content: "❌ Você já está nessa página.", flags: 64 });
     pageData.currentPage = newPage;
-    
     const start = newPage * 10;
     const end = Math.min(start + 10, pageData.data.length);
     const pageItems = pageData.data.slice(start, end);
-
     let descricao = '';
     for (let i = 0; i < pageItems.length; i++) {
       const [userId, dados] = pageItems[i];
@@ -1670,27 +1334,11 @@ client.on("interactionCreate", async (interaction) => {
       const medalha = pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' : `${pos}º`;
       descricao += `${medalha} **${nome}** — ${dados.saldo} ZéCoins\n`;
     }
-
-    const embed = new EmbedBuilder()
-      .setTitle(`📊 Todos os Membros com ZéCoins`)
-      .setColor("Blue")
-      .setDescription(descricao || "Nenhum usuário encontrado.")
-      .setFooter({ text: `Página ${newPage + 1}/${pageData.totalPages} • Total: ${pageData.data.length} membros` })
-      .setTimestamp();
-
+    const embed = new EmbedBuilder().setTitle(`📊 Todos os Membros com ZéCoins`).setColor("Blue").setDescription(descricao || "Nenhum usuário encontrado.").setFooter({ text: `Página ${newPage + 1}/${pageData.totalPages} • Total: ${pageData.data.length} membros` }).setTimestamp();
     const botoes = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("staff_moedas_anterior")
-        .setLabel("◀️ Anterior")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(newPage === 0),
-      new ButtonBuilder()
-        .setCustomId("staff_moedas_proximo")
-        .setLabel("Próximo ▶️")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(newPage === pageData.totalPages - 1)
+      new ButtonBuilder().setCustomId("staff_moedas_anterior").setLabel("◀️ Anterior").setStyle(ButtonStyle.Secondary).setDisabled(newPage === 0),
+      new ButtonBuilder().setCustomId("staff_moedas_proximo").setLabel("Próximo ▶️").setStyle(ButtonStyle.Secondary).setDisabled(newPage === pageData.totalPages - 1)
     );
-
     await interaction.update({ embeds: [embed], components: [botoes] });
   }
 });
