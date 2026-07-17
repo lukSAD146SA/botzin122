@@ -1,4 +1,6 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+const { joinVoiceChannel, createAudioPlayer, NoSubscriberBehavior, createAudioResource } = require("@discordjs/voice");
+const { Readable } = require("stream");
 
 const client = new Client({
   intents: [
@@ -7,6 +9,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildVoiceStates, // necessário para voz
   ],
 });
 
@@ -30,8 +33,8 @@ const inventarios         = {};
 const tickets             = {};
 const avaliacoesPendentes = {};
 const ultimaAvaliacao     = {};
-const sorteExtraAtivo     = {}; // Guarda quem tem sorte extra ativa
-const COOLDOWN_AVALIACAO  = 24 * 60 * 60 * 1000; // 24 horas
+const sorteExtraAtivo     = {};
+const COOLDOWN_AVALIACAO  = 24 * 60 * 60 * 1000;
 
 const CARGOS_ISENTOS   = ["1509304131263926292", "1508405150572871720"];
 const CARGOS_MODERACAO = ["1508405150572871720"];
@@ -41,8 +44,8 @@ const LOJA = [
   { id: "silenciador",  nome: "🔇 Silenciador",               preco: 5000,  tipo: "item", descricao: "Muta alguém por 5 minutos." },
   { id: "apelido",      nome: "🏷️ Apelido",                   preco: 1000,  tipo: "item", descricao: "Muda o apelido de alguém por 1h." },
   { id: "caixa",        nome: "🎁 Caixa Misteriosa",          preco: 5000,  tipo: "item", descricao: "Ganhe entre 100 e 10.000 ZéCoins." },
-  { id: "ficha_roblox", nome: "🎟️ Ficha de Serviço Roblox",  preco: 12000, tipo: "item", descricao: "Ficha para serviços Roblox. Abra um ticket para usar!" }, // REDUZIDO
-  { id: "sorte_extra",  nome: "🍀 Sorte Extra",               preco: 1000,  tipo: "item", descricao: "Ganha 50% de bônus no /diario por 24h!" },
+  { id: "ficha_roblox", nome: "🎟️ Ficha de Serviço Roblox",  preco: 12000, tipo: "item", descricao: "Ficha para serviços Roblox. Abra um ticket para usar!" },
+  { id: "sorte_extra",  nome: "🍀 Sorte Extra",               preco: 1000,  tipo: "item", descricao: "Ganha 50% de bônus no /trabalhar por 24h!" },
 ];
 
 // ============================================================
@@ -174,6 +177,40 @@ async function enviarLogTicket(guild, embed, files = []) {
     const canal = await guild.channels.fetch(CANAL_LOGS_TICKET_ID).catch(() => null);
     if (canal) await canal.send({ embeds: [embed], files });
   } catch (err) { console.error("[ERRO LOG TICKET]", err.message); }
+}
+
+// ============================================================
+// FUNÇÃO PARA ENVIAR DM DE PUNIÇÃO (STAFF)
+// ============================================================
+async function enviarDMPunicao(user, staffTag, acao, motivo) {
+  try {
+    const embed = new EmbedBuilder()
+      .setTitle(`🔨 Você foi ${acao}`)
+      .setColor("Red")
+      .setDescription(
+        `Verificamos que você descumpriu uma ou mais regras do servidor.\n\n` +
+        `**Nota do staff:** ${motivo || "Não informado"}`
+      )
+      .setFooter({ text: `Staff responsável: ${staffTag}` })
+      .setTimestamp();
+
+    await user.send({ embeds: [embed] });
+    console.log(`[DM] Punição enviada para ${user.tag}`);
+  } catch (err) {
+    console.log(`[DM] Não foi possível enviar DM para ${user.tag}: ${err.message}`);
+  }
+}
+
+// ============================================================
+// FUNÇÃO PARA ÁUDIO MUDO (VOZ AFK)
+// ============================================================
+function createSilenceStream() {
+  return new Readable({
+    read() {
+      const buffer = Buffer.alloc(4800 * 2); // 0.1s de silêncio
+      this.push(buffer);
+    }
+  });
 }
 
 // ============================================================
@@ -368,9 +405,57 @@ client.once("ready", async () => {
 
     new SlashCommandBuilder().setName("fechar-ticket").setDescription("Fecha o ticket atual"),
 
-    // NOVO COMANDO STAFF
     new SlashCommandBuilder()
       .setName("staff-ver-moedas").setDescription("[STAFF] Mostra todos os membros com ZéCoins no servidor"),
+
+    // Comandos de moderação
+    new SlashCommandBuilder()
+      .setName("kick").setDescription("[STAFF] Expulsa um membro do servidor")
+      .addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser expulso").setRequired(true))
+      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo da expulsão").setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName("ban").setDescription("[STAFF] Bane um membro do servidor")
+      .addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser banido").setRequired(true))
+      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo do banimento").setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName("mute").setDescription("[STAFF] Muta um membro por um período")
+      .addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser mutado").setRequired(true))
+      .addIntegerOption(opt => opt.setName("duracao").setDescription("Duração em minutos").setRequired(true))
+      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo do mute").setRequired(false)),
+
+    // Comando: Adicionar moedas a múltiplos usuários
+    new SlashCommandBuilder()
+      .setName("addmoedas")
+      .setDescription("[STAFF] Adiciona ZéCoins a vários usuários de uma vez")
+      .addStringOption(opt => 
+        opt.setName("usuarios")
+          .setDescription("Menções ou IDs separados por espaço (ex: @user1 @user2 123456789)")
+          .setRequired(true)
+      )
+      .addIntegerOption(opt =>
+        opt.setName("quantidade")
+          .setDescription("Quantidade a adicionar a cada usuário")
+          .setRequired(true)
+          .setMinValue(1)
+      ),
+
+    // Comando: Voz AFK
+    new SlashCommandBuilder()
+      .setName("voz")
+      .setDescription("[STAFF] Entra em um canal de voz e fica AFK")
+      .addChannelOption(opt =>
+        opt.setName("canal")
+          .setDescription("Canal de voz onde o bot vai entrar")
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildVoice)
+      )
+      .addBooleanOption(opt =>
+        opt.setName("sair")
+          .setDescription("Se true, o bot sai do canal de voz")
+          .setRequired(false)
+      ),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -442,36 +527,22 @@ client.on("messageCreate", async (message) => {
   }
 
   // ============================================================
-  // PALAVRAS PROIBIDAS (COM MUTE E DM)
+  // PALAVRAS PROIBIDAS (COM MUTE - SEM DM AUTOMÁTICA)
   // ============================================================
   const isStaff = message.member.roles.cache.some((r) => CARGOS_ISENTOS.includes(r.id));
 
   if (!isStaff && contemPalavraGrave(message.content)) {
-    const msgText = message.content;
     try { await message.delete(); } catch {}
     try {
       await message.member.timeout(5 * 60 * 1000, "Automod: conteúdo proibido");
       await message.channel.send(`⚠️ ${message.author}, esse tipo de conteúdo não é permitido aqui! Você foi mutado por 5 minutos.`);
-
-      try {
-        const dmEmbed = new EmbedBuilder()
-          .setTitle("🚫 Você foi mutado por conteúdo proibido")
-          .setColor("Red")
-          .setDescription(`Olá **${message.author.username}**,\n\nVocê enviou uma mensagem contendo **palavras ou termos proibidos** no servidor **${message.guild.name}**.\n\n**Mensagem bloqueada:**\n||${msgText.slice(0, 500)}||\n\n**O que aconteceu?**\n• Sua mensagem foi **deletada** automaticamente.\n• Você recebeu um **mute de 5 minutos**.\n\n**Palavras proibidas incluem:** ofensas raciais, discriminação, termos como "b1o", "vendas", etc.\n\nPor favor, respeite as regras da comunidade. Se achar que foi um engano, contate a staff.`)
-          .setFooter({ text: "Scripts SDZ • Moderação Automática" })
-          .setTimestamp();
-        await message.author.send({ embeds: [dmEmbed] });
-        console.log(`[DM] Notificação enviada para ${message.author.tag} sobre conteúdo proibido.`);
-      } catch (dmErr) {
-        console.log(`[DM] Não foi possível enviar DM para ${message.author.tag}: ${dmErr.message}`);
-      }
 
       await enviarLogMod(message.guild, new EmbedBuilder()
         .setTitle("🚫 Conteúdo Proibido").setColor("DarkRed")
         .addFields(
           { name: "Usuário", value: `${message.author.tag} (\`${message.author.id}\`)` },
           { name: "Canal", value: `<#${message.channel.id}>` },
-          { name: "Mensagem", value: `||${msgText.slice(0, 200)}||` },
+          { name: "Mensagem", value: `||${message.content.slice(0, 200)}||` },
           { name: "Duração", value: "5 minutos" }
         )
         .setTimestamp());
@@ -812,20 +883,11 @@ client.on("interactionCreate", async (interaction) => {
     const cd     = 24 * 60 * 60 * 1000;
     if (agora - perfil.ultimoDiario < cd) return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoDiario))}**.`, flags: 64 });
     
-    // Verifica se tem Sorte Extra ativa
-    const temSorte = sorteExtraAtivo[interaction.user.id] && sorteExtraAtivo[interaction.user.id] > Date.now();
-    let r = Math.floor(Math.random() * 51) + 50;
-    let bonus = 0;
-    if (temSorte) {
-      bonus = Math.floor(r * 0.5); // 50% de bônus
-      r += bonus;
-    }
-    
+    // Sorte Extra NÃO se aplica aqui
+    const r = Math.floor(Math.random() * 51) + 50;
     perfil.saldo += r; 
     perfil.ultimoDiario = agora;
-    
-    const msgBonus = temSorte ? ` (com 🍀 Sorte Extra: +${bonus} de bônus!)` : '';
-    await interaction.reply(`💰 ${interaction.user} resgatou **${r} ZéCoins**!${msgBonus} Saldo: **${perfil.saldo}**`);
+    await interaction.reply(`💰 ${interaction.user} resgatou **${r} ZéCoins**! Saldo: **${perfil.saldo}**`);
   }
 
   // ---- /trabalhar ----
@@ -834,11 +896,24 @@ client.on("interactionCreate", async (interaction) => {
     const agora  = Date.now();
     const cd     = 60 * 60 * 1000;
     if (agora - perfil.ultimoTrabalho < cd) return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoTrabalho))}**.`, flags: 64 });
+    
     const trabalhos = ["entregou pizza e ganhou", "consertou um computador e faturou", "vendeu um script raro e lucrou", "ajudou um streamer e recebeu", "fez um frila de design e cobrou"];
     const trabalho = trabalhos[Math.floor(Math.random() * trabalhos.length)];
-    const ganho = Math.floor(Math.random() * 26) + 15;
-    perfil.saldo += ganho; perfil.ultimoTrabalho = agora;
-    await interaction.reply(`💼 ${interaction.user} ${trabalho} **${ganho} ZéCoins**! Saldo: **${perfil.saldo}**`);
+    let ganho = Math.floor(Math.random() * 26) + 15;
+
+    // Verifica Sorte Extra
+    const temSorte = sorteExtraAtivo[interaction.user.id] && sorteExtraAtivo[interaction.user.id] > Date.now();
+    let bonus = 0;
+    if (temSorte) {
+      bonus = Math.floor(ganho * 0.5); // 50% de bônus
+      ganho += bonus;
+    }
+
+    perfil.saldo += ganho; 
+    perfil.ultimoTrabalho = agora;
+    
+    const msgBonus = temSorte ? ` (com 🍀 Sorte Extra: +${bonus} de bônus!)` : '';
+    await interaction.reply(`💼 ${interaction.user} ${trabalho} **${ganho} ZéCoins**!${msgBonus} Saldo: **${perfil.saldo}**`);
   }
 
   // ---- /carteira ----
@@ -922,10 +997,9 @@ client.on("interactionCreate", async (interaction) => {
       getPerfil(interaction.user.id).saldo += premio.valor; inv[itemId]--;
       await interaction.reply({ embeds: [new EmbedBuilder().setTitle("🎁 Caixa Misteriosa!").setColor("Gold").setDescription(`${premio.label}\n\n${interaction.user} ganhou **${premio.valor} ZéCoins**!`).setTimestamp()] });
     } else if (itemId === "sorte_extra") {
-      // Ativa a Sorte Extra por 24h
       sorteExtraAtivo[interaction.user.id] = Date.now() + 24 * 60 * 60 * 1000;
       inv[itemId]--;
-      await interaction.reply(`🍀 **Sorte Extra ativada!** Você ganha 50% de bônus no /diario por 24h!`);
+      await interaction.reply(`🍀 **Sorte Extra ativada!** Agora você ganha 50% de bônus no **/trabalhar** por 24h!`);
     } else { await interaction.reply({ content: "❌ Item não pode ser usado assim.", flags: 64 }); }
   }
 
@@ -1078,7 +1152,7 @@ client.on("interactionCreate", async (interaction) => {
       .addFields({ name: "Staff", value: interaction.user.tag }, { name: "Usuário", value: user.tag }, { name: "Quantidade", value: `${quantidade}` }).setTimestamp());
   }
 
-  // ---- /staff-ver-moedas (NOVO COMANDO) ----
+  // ---- /staff-ver-moedas ----
   if (interaction.commandName === "staff-ver-moedas") {
     if (!temCargoMod(interaction.member)) {
       return interaction.reply({ content: "❌ Você não tem permissão para usar este comando!", flags: 64 });
@@ -1090,18 +1164,15 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "📭 Nenhum usuário tem ZéCoins registrados ainda.", flags: 64 });
     }
 
-    // Pega todos os membros do servidor para verificar quem ainda está aqui
     const membros = await interaction.guild.members.fetch();
     const membroIds = new Set(membros.map(m => m.id));
 
-    // Filtra apenas usuários que ainda estão no servidor
     const usuariosNoServidor = usuarios.filter(([id]) => membroIds.has(id));
     
     if (!usuariosNoServidor.length) {
       return interaction.reply({ content: "📭 Nenhum usuário do servidor tem ZéCoins registrados.", flags: 64 });
     }
 
-    // Cria as páginas (10 por página)
     const pageSize = 10;
     const totalPages = Math.ceil(usuariosNoServidor.length / pageSize);
     let currentPage = 0;
@@ -1131,7 +1202,6 @@ client.on("interactionCreate", async (interaction) => {
       return embed;
     }
 
-    // Envia a primeira página com botões de navegação
     const embed = await criarEmbed(0);
     const botoes = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -1152,7 +1222,6 @@ client.on("interactionCreate", async (interaction) => {
       flags: 64 
     });
 
-    // Guarda o estado para navegação
     const messageId = (await interaction.fetchReply()).id;
     client.staffMoedasPages = client.staffMoedasPages || {};
     client.staffMoedasPages[messageId] = {
@@ -1161,6 +1230,278 @@ client.on("interactionCreate", async (interaction) => {
       totalPages: totalPages,
       data: usuariosNoServidor
     };
+  }
+
+  // ============================================================
+  // NOVOS COMANDOS DE MODERAÇÃO: KICK, BAN, MUTE
+  // ============================================================
+
+  // ---- /kick ----
+  if (interaction.commandName === "kick") {
+    if (!temCargoMod(interaction.member)) {
+      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
+    }
+
+    const usuario = interaction.options.getUser("usuario");
+    const motivo  = interaction.options.getString("motivo") || "Não informado";
+
+    if (usuario.id === interaction.user.id) {
+      return interaction.reply({ content: "❌ Você não pode se expulsar.", flags: 64 });
+    }
+
+    const member = await interaction.guild.members.fetch(usuario.id).catch(() => null);
+    if (!member) {
+      return interaction.reply({ content: "❌ Usuário não encontrado no servidor.", flags: 64 });
+    }
+
+    if (!member.kickable) {
+      return interaction.reply({ content: "❌ Não tenho permissão para expulsar este usuário.", flags: 64 });
+    }
+
+    try {
+      await member.kick(`Expulso por ${interaction.user.tag} - Motivo: ${motivo}`);
+      
+      await enviarDMPunicao(usuario, interaction.user.tag, "EXPULSO", motivo);
+
+      const embedLog = new EmbedBuilder()
+        .setTitle("👢 Kick")
+        .setColor("Orange")
+        .addFields(
+          { name: "Staff", value: interaction.user.tag },
+          { name: "Usuário", value: usuario.tag },
+          { name: "Motivo", value: motivo }
+        )
+        .setTimestamp();
+      await enviarLogMod(interaction.guild, embedLog);
+
+      await interaction.reply(`✅ **${usuario.tag}** foi expulso. Motivo: ${motivo}`);
+    } catch (err) {
+      console.error("[ERRO KICK]", err);
+      await interaction.reply({ content: "❌ Erro ao expulsar o usuário.", flags: 64 });
+    }
+  }
+
+  // ---- /ban ----
+  if (interaction.commandName === "ban") {
+    if (!temCargoMod(interaction.member)) {
+      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
+    }
+
+    const usuario = interaction.options.getUser("usuario");
+    const motivo  = interaction.options.getString("motivo") || "Não informado";
+
+    if (usuario.id === interaction.user.id) {
+      return interaction.reply({ content: "❌ Você não pode se banir.", flags: 64 });
+    }
+
+    const member = await interaction.guild.members.fetch(usuario.id).catch(() => null);
+    if (member && !member.bannable) {
+      return interaction.reply({ content: "❌ Não tenho permissão para banir este usuário.", flags: 64 });
+    }
+
+    try {
+      await interaction.guild.members.ban(usuario.id, { reason: `Banido por ${interaction.user.tag} - Motivo: ${motivo}` });
+      
+      await enviarDMPunicao(usuario, interaction.user.tag, "BANIDO", motivo);
+
+      const embedLog = new EmbedBuilder()
+        .setTitle("🔨 Ban")
+        .setColor("Red")
+        .addFields(
+          { name: "Staff", value: interaction.user.tag },
+          { name: "Usuário", value: usuario.tag },
+          { name: "Motivo", value: motivo }
+        )
+        .setTimestamp();
+      await enviarLogMod(interaction.guild, embedLog);
+
+      await interaction.reply(`✅ **${usuario.tag}** foi banido. Motivo: ${motivo}`);
+    } catch (err) {
+      console.error("[ERRO BAN]", err);
+      await interaction.reply({ content: "❌ Erro ao banir o usuário.", flags: 64 });
+    }
+  }
+
+  // ---- /mute ----
+  if (interaction.commandName === "mute") {
+    if (!temCargoMod(interaction.member)) {
+      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
+    }
+
+    const usuario   = interaction.options.getUser("usuario");
+    const duracao   = interaction.options.getInteger("duracao");
+    const motivo    = interaction.options.getString("motivo") || "Não informado";
+
+    if (usuario.id === interaction.user.id) {
+      return interaction.reply({ content: "❌ Você não pode se mutar.", flags: 64 });
+    }
+
+    const member = await interaction.guild.members.fetch(usuario.id).catch(() => null);
+    if (!member) {
+      return interaction.reply({ content: "❌ Usuário não encontrado no servidor.", flags: 64 });
+    }
+
+    if (!member.moderatable) {
+      return interaction.reply({ content: "❌ Não tenho permissão para mutar este usuário.", flags: 64 });
+    }
+
+    const duracaoMs = duracao * 60 * 1000;
+
+    try {
+      await member.timeout(duracaoMs, `Mutado por ${interaction.user.tag} - Motivo: ${motivo}`);
+      
+      await enviarDMPunicao(usuario, interaction.user.tag, "MUTADO", motivo);
+
+      const embedLog = new EmbedBuilder()
+        .setTitle("🔇 Mute")
+        .setColor("Yellow")
+        .addFields(
+          { name: "Staff", value: interaction.user.tag },
+          { name: "Usuário", value: usuario.tag },
+          { name: "Duração", value: `${duracao} minuto(s)` },
+          { name: "Motivo", value: motivo }
+        )
+        .setTimestamp();
+      await enviarLogMod(interaction.guild, embedLog);
+
+      await interaction.reply(`✅ **${usuario.tag}** foi mutado por ${duracao} minuto(s). Motivo: ${motivo}`);
+    } catch (err) {
+      console.error("[ERRO MUTE]", err);
+      await interaction.reply({ content: "❌ Erro ao mutar o usuário.", flags: 64 });
+    }
+  }
+
+  // ---- /addmoedas ----
+  if (interaction.commandName === "addmoedas") {
+    if (!temCargoMod(interaction.member)) {
+      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
+    }
+
+    const usuariosStr = interaction.options.getString("usuarios");
+    const quantidade  = interaction.options.getInteger("quantidade");
+
+    // Extrai menções e IDs da string
+    const mentionRegex = /<@!?(\d+)>/g;
+    const ids = [];
+    let match;
+    while ((match = mentionRegex.exec(usuariosStr)) !== null) {
+      ids.push(match[1]);
+    }
+    // Também tenta pegar IDs numéricos soltos
+    const numericIds = usuariosStr.match(/\b\d{17,20}\b/g);
+    if (numericIds) {
+      for (const id of numericIds) {
+        if (!ids.includes(id)) ids.push(id);
+      }
+    }
+
+    if (ids.length === 0) {
+      return interaction.reply({ content: "❌ Nenhum usuário válido encontrado. Use menções ou IDs.", flags: 64 });
+    }
+
+    // Remove duplicatas
+    const uniqueIds = [...new Set(ids)];
+
+    let sucessos = 0;
+    let falhas = 0;
+    const resultados = [];
+
+    for (const id of uniqueIds) {
+      try {
+        const user = await client.users.fetch(id);
+        const perfil = getPerfil(id);
+        perfil.saldo += quantidade;
+        sucessos++;
+        resultados.push(`✅ ${user.tag} (+${quantidade})`);
+      } catch (err) {
+        falhas++;
+        resultados.push(`❌ ID ${id} (usuário não encontrado)`);
+      }
+    }
+
+    // Log no canal de moderação
+    const embedLog = new EmbedBuilder()
+      .setTitle("💰 Adição em Massa de ZéCoins")
+      .setColor("Green")
+      .addFields(
+        { name: "Staff", value: interaction.user.tag },
+        { name: "Quantidade", value: `${quantidade} por usuário` },
+        { name: "Sucessos", value: `${sucessos}` },
+        { name: "Falhas", value: `${falhas}` }
+      )
+      .setTimestamp();
+    await enviarLogMod(interaction.guild, embedLog);
+
+    await interaction.reply({
+      embeds: [new EmbedBuilder()
+        .setTitle("✅ Moedas Adicionadas")
+        .setColor("Green")
+        .setDescription(`**${quantidade} ZéCoins** adicionados a **${sucessos}** usuário(s).\n\n${resultados.join("\n")}`)
+        .setFooter({ text: `Total: ${uniqueIds.length} usuários processados` })
+        .setTimestamp()
+      ],
+      flags: 64
+    });
+  }
+
+  // ---- /voz ----
+  if (interaction.commandName === "voz") {
+    if (!temCargoMod(interaction.member)) {
+      return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
+    }
+
+    const sair = interaction.options.getBoolean("sair") || false;
+    const canal = interaction.options.getChannel("canal");
+
+    if (sair) {
+      const connection = client.voiceConnections?.get(interaction.guild.id);
+      if (connection) {
+        connection.destroy();
+        client.voiceConnections.delete(interaction.guild.id);
+        return interaction.reply({ content: `✅ Desconectado do canal de voz!`, flags: 64 });
+      } else {
+        return interaction.reply({ content: "❌ O bot não está em nenhum canal de voz neste servidor.", flags: 64 });
+      }
+    }
+
+    if (client.voiceConnections?.has(interaction.guild.id)) {
+      return interaction.reply({ content: "❌ O bot já está em um canal de voz. Use `/voz sair:true` para desconectar.", flags: 64 });
+    }
+
+    try {
+      const connection = joinVoiceChannel({
+        channelId: canal.id,
+        guildId: interaction.guild.id,
+        adapterCreator: interaction.guild.voiceAdapterCreator,
+      });
+
+      const player = createAudioPlayer({
+        behaviors: {
+          noSubscriber: NoSubscriberBehavior.Play,
+        },
+      });
+
+      const silenceStream = createSilenceStream();
+      const resource = createAudioResource(silenceStream, {
+        inputType: "raw",
+        inlineVolume: false,
+      });
+
+      player.play(resource);
+      connection.subscribe(player);
+
+      if (!client.voiceConnections) client.voiceConnections = new Map();
+      client.voiceConnections.set(interaction.guild.id, connection);
+
+      connection.on("disconnect", () => {
+        client.voiceConnections.delete(interaction.guild.id);
+      });
+
+      await interaction.reply({ content: `✅ Conectado ao canal **${canal.name}**! Ficarei AFK por lá.`, flags: 64 });
+    } catch (err) {
+      console.error("[ERRO VOZ]", err);
+      await interaction.reply({ content: "❌ Erro ao conectar ao canal de voz. Verifique permissões.", flags: 64 });
+    }
   }
 
   // ---- /lockdown ----
@@ -1314,7 +1655,6 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "❌ Você já está nessa página.", flags: 64 });
     }
 
-    // Atualiza a página
     pageData.currentPage = newPage;
     
     const start = newPage * 10;
