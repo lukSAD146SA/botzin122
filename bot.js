@@ -39,7 +39,7 @@ const CARGOS_MODERACAO = ["1508405150572871720"];
 // ============================================================
 // STICKY MESSAGES
 // ============================================================
-const stickyMessages = {}; // { channelId: { content, messageId } }
+const stickyMessages = {};
 
 // ============================================================
 // LOJA
@@ -433,6 +433,15 @@ client.once("ready", async () => {
           .setRequired(true)
           .setMinValue(1)
       ),
+
+    // 🆕 NOVO COMANDO: /formulario
+    new SlashCommandBuilder()
+      .setName("formulario")
+      .setDescription("[STAFF] Gerencia o formulário de recrutamento")
+      .addSubcommand(sub => 
+        sub.setName("ativar")
+          .setDescription("Ativa o formulário de staff no canal atual")
+      ),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -459,7 +468,6 @@ client.on("messageCreate", async (message) => {
 
   // ---- STICKY MESSAGE ----
   if (message.content.startsWith(".st")) {
-    // Apenas staff pode usar
     if (!temCargoMod(message.member)) {
       return message.reply("❌ Você não tem permissão para usar este comando.");
     }
@@ -468,7 +476,6 @@ client.on("messageCreate", async (message) => {
     const channelId = message.channel.id;
 
     if (!args) {
-      // Remove sticky
       if (stickyMessages[channelId]) {
         const old = stickyMessages[channelId];
         try {
@@ -483,16 +490,12 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Definir sticky
     const content = args;
-    // Deleta mensagem do comando
     await message.delete().catch(() => {});
 
-    // Envia a sticky
     const sent = await message.channel.send(content);
     stickyMessages[channelId] = { content, messageId: sent.id };
 
-    // Notifica o autor (opcional)
     const dmEmbed = new EmbedBuilder()
       .setTitle("📌 Sticky ativado!")
       .setColor("Green")
@@ -506,18 +509,14 @@ client.on("messageCreate", async (message) => {
   // ---- LÓGICA PARA MANTER STICKY SEMPRE EM BAIXO ----
   const sticky = stickyMessages[message.channel.id];
   if (sticky) {
-    // Se a mensagem for do próprio bot e for a sticky, ignora (evita loop)
     if (message.author.id === client.user.id && message.id === sticky.messageId) {
       return;
     }
 
-    // Se for uma mensagem normal (de usuário ou outro), reenvia a sticky
     try {
-      // Tenta deletar a sticky antiga
       const oldMsg = await message.channel.messages.fetch(sticky.messageId).catch(() => null);
       if (oldMsg) await oldMsg.delete().catch(() => {});
 
-      // Envia a sticky novamente
       const newMsg = await message.channel.send(sticky.content);
       sticky.messageId = newMsg.id;
     } catch (err) {
@@ -568,7 +567,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ---- PALAVRAS PROIBIDAS (sem DM automática) ----
+  // ---- PALAVRAS PROIBIDAS ----
   const isStaff = message.member.roles.cache.some((r) => CARGOS_ISENTOS.includes(r.id));
   if (!isStaff && contemPalavraGrave(message.content)) {
     try { await message.delete(); } catch {}
@@ -598,6 +597,28 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- BOTÕES ----
   if (interaction.isButton()) {
+    // 🆕 Botão "Dúvidas" do formulário
+    if (interaction.customId === "formulario_duvidas") {
+      const select = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId("ticket_categoria")
+          .setPlaceholder("Escolha uma opção para sua Dúvida.")
+          .addOptions(
+            new StringSelectMenuOptionBuilder().setLabel("📜 Dúvida sobre o formulário").setDescription("Tire suas dúvidas sobre o processo seletivo").setValue("duvida_formulario").setEmoji("📜"),
+            new StringSelectMenuOptionBuilder().setLabel("📜 Dúvida Script").setDescription("Dúvidas sobre scripts").setValue("duvida_script").setEmoji("📜"),
+            new StringSelectMenuOptionBuilder().setLabel("⚙️ Dúvida Executor").setDescription("Dúvidas sobre executores").setValue("duvida_executor").setEmoji("⚙️"),
+            new StringSelectMenuOptionBuilder().setLabel("💬 Outros").setDescription("Outros assuntos").setValue("outros").setEmoji("💬")
+          )
+      );
+
+      await interaction.reply({
+        content: "Escolha o motivo para abrir seu ticket:",
+        components: [select],
+        flags: 64 // ephemeral
+      });
+      return;
+    }
+
     // Modal de avaliação
     if (interaction.customId === "abrir_modal_avaliacao") {
       const agora = Date.now();
@@ -845,7 +866,12 @@ client.on("interactionCreate", async (interaction) => {
       const ticketExistente = Object.values(tickets).find((t) => t.userId === userId);
       if (ticketExistente) return interaction.reply({ content: "❌ Você já tem um ticket aberto!", flags: 64 });
       await interaction.deferReply({ flags: 64 });
-      const nomes = { duvida_script: "📜 Dúvida Script", duvida_executor: "⚙️ Dúvida Executor", outros: "💬 Outros" };
+      const nomes = { 
+        duvida_formulario: "📜 Dúvida sobre Formulário",
+        duvida_script: "📜 Dúvida Script", 
+        duvida_executor: "⚙️ Dúvida Executor", 
+        outros: "💬 Outros" 
+      };
       const nomeCategoria = nomes[categoria] || categoria;
       const nomeCanal     = `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
       try {
@@ -1296,6 +1322,49 @@ client.on("interactionCreate", async (interaction) => {
       embeds: [new EmbedBuilder().setTitle("✅ Moedas Adicionadas").setColor("Green").setDescription(`**${quantidade} ZéCoins** adicionados a **${sucessos}** usuário(s).\n\n${resultados.join("\n")}`).setFooter({ text: `Total: ${uniqueIds.length} usuários processados` }).setTimestamp()],
       flags: 64
     });
+  }
+
+  // ---- /formulario ativar ----
+  if (interaction.commandName === "formulario") {
+    const sub = interaction.options.getSubcommand();
+    if (sub === "ativar") {
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Apenas staff pode usar este comando.", flags: 64 });
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle("📋 Formulário Skyland")
+        .setDescription(
+          "Preencha o formulário abaixo e faça parte da equipe!\n" +
+          "Buscamos pessoas comprometidas, ativas e que queiram ajudar a manter nossa comunidade organizada e em constante crescimento.\n\n" +
+          "**Requisitos:**\n" +
+          "• Ser ativo\n" +
+          "• Ter maturidade e responsabilidade\n" +
+          "• Saber trabalhar em equipe\n" +
+          "• Respeitar todos os membros\n" +
+          "• Seguir as regras do servidor\n\n" +
+          "Se tiver interesse, preencha o formulário e aguarde a análise da equipe. Boa sorte!"
+        )
+        .setColor("Blue")
+        .setImage("https://i.imgur.com/tov858d.png") // imagem fornecida
+        .setFooter({ text: "Skyland • Recrutamento" })
+        .setTimestamp();
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("formulario_link")
+          .setLabel("📝 Preencher Formulário")
+          .setStyle(ButtonStyle.Link)
+          .setURL("LINK_DO_FORMULARIO_AQUI"), // ⚠️ SUBSTITUA PELO LINK REAL
+        new ButtonBuilder()
+          .setCustomId("formulario_duvidas")
+          .setLabel("❓ Dúvidas")
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await interaction.channel.send({ embeds: [embed], components: [row] });
+      await interaction.reply({ content: "✅ Formulário ativado com sucesso!", flags: 64 });
+    }
   }
 
   // ---- lockdown ----
