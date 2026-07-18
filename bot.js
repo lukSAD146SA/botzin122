@@ -434,13 +434,19 @@ client.once("ready", async () => {
           .setMinValue(1)
       ),
 
-    // 🆕 NOVO COMANDO: /formulario
+    // 🆕 COMANDO /formulario com opção de canal
     new SlashCommandBuilder()
       .setName("formulario")
       .setDescription("[STAFF] Gerencia o formulário de recrutamento")
       .addSubcommand(sub => 
         sub.setName("ativar")
-          .setDescription("Ativa o formulário de staff no canal atual")
+          .setDescription("Ativa o formulário de staff em um canal específico (ou no atual)")
+          .addChannelOption(opt =>
+            opt.setName("canal")
+              .setDescription("Canal onde enviar o formulário (opcional)")
+              .setRequired(false)
+              .addChannelTypes(ChannelType.GuildText)
+          )
       ),
   ];
 
@@ -597,7 +603,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- BOTÕES ----
   if (interaction.isButton()) {
-    // 🆕 Botão "Dúvidas" do formulário
+    // Botão "Dúvidas" do formulário
     if (interaction.customId === "formulario_duvidas") {
       const select = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -913,7 +919,7 @@ client.on("interactionCreate", async (interaction) => {
   // ---- COMANDOS SLASH ----
   if (!interaction.isChatInputCommand()) return;
 
-  // --- Comandos existentes (resumidos para não repetir tudo) ---
+  // --- Comandos existentes (resumidos) ---
   if (interaction.commandName === "say") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const texto = interaction.options.getString("mensagem");
@@ -1324,12 +1330,18 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /formulario ativar ----
+  // ---- /formulario ativar (COM ESCOLHA DE CANAL) ----
   if (interaction.commandName === "formulario") {
     const sub = interaction.options.getSubcommand();
     if (sub === "ativar") {
       if (!temCargoMod(interaction.member)) {
         return interaction.reply({ content: "❌ Apenas staff pode usar este comando.", flags: 64 });
+      }
+
+      // Canal opcional: se não fornecido, usa o canal atual
+      const canalDestino = interaction.options.getChannel("canal") || interaction.channel;
+      if (canalDestino.type !== ChannelType.GuildText) {
+        return interaction.reply({ content: "❌ O canal deve ser de texto.", flags: 64 });
       }
 
       const embed = new EmbedBuilder()
@@ -1362,8 +1374,11 @@ client.on("interactionCreate", async (interaction) => {
           .setStyle(ButtonStyle.Primary)
       );
 
-      await interaction.channel.send({ embeds: [embed], components: [row] });
-      await interaction.reply({ content: "✅ Formulário ativado com sucesso!", flags: 64 });
+      await canalDestino.send({ embeds: [embed], components: [row] });
+      await interaction.reply({ 
+        content: `✅ Formulário ativado com sucesso em ${canalDestino}!`,
+        flags: 64 
+      });
     }
   }
 
