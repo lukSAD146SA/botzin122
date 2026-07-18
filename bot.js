@@ -1330,18 +1330,22 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /formulario ativar (COM ESCOLHA DE CANAL) ----
+  // ---- /formulario ativar (COM ESCOLHA DE CANAL E DEFER REPLY) ----
   if (interaction.commandName === "formulario") {
     const sub = interaction.options.getSubcommand();
     if (sub === "ativar") {
+      // Verifica permissão de staff
       if (!temCargoMod(interaction.member)) {
         return interaction.reply({ content: "❌ Apenas staff pode usar este comando.", flags: 64 });
       }
 
+      // 🔥 Adia a resposta para evitar timeout
+      await interaction.deferReply({ flags: 64 }); // ephemeral
+
       // Canal opcional: se não fornecido, usa o canal atual
       const canalDestino = interaction.options.getChannel("canal") || interaction.channel;
       if (canalDestino.type !== ChannelType.GuildText) {
-        return interaction.reply({ content: "❌ O canal deve ser de texto.", flags: 64 });
+        return interaction.editReply({ content: "❌ O canal deve ser de texto." });
       }
 
       const embed = new EmbedBuilder()
@@ -1374,11 +1378,15 @@ client.on("interactionCreate", async (interaction) => {
           .setStyle(ButtonStyle.Primary)
       );
 
-      await canalDestino.send({ embeds: [embed], components: [row] });
-      await interaction.reply({ 
-        content: `✅ Formulário ativado com sucesso em ${canalDestino}!`,
-        flags: 64 
-      });
+      try {
+        // Envia a mensagem no canal escolhido
+        await canalDestino.send({ embeds: [embed], components: [row] });
+        // Responde ao staff confirmando
+        await interaction.editReply({ content: `✅ Formulário ativado com sucesso em ${canalDestino}!` });
+      } catch (err) {
+        console.error("[ERRO FORMULARIO]", err);
+        await interaction.editReply({ content: "❌ Erro ao enviar o formulário. Verifique se tenho permissão no canal e se o link é válido." });
+      }
     }
   }
 
