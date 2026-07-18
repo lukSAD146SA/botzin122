@@ -1,6 +1,4 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-const { joinVoiceChannel, createAudioPlayer, NoSubscriberBehavior, createAudioResource } = require("@discordjs/voice");
-const { Readable } = require("stream");
 
 const client = new Client({
   intents: [
@@ -9,7 +7,6 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildVoiceStates,
   ],
 });
 
@@ -26,8 +23,6 @@ const CARGO_SUPORTE_ID     = "1513399309306036355";
 const CANAL_AVALIACOES_ID  = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const TAXA_TRANSFERENCIA   = 0.05;
-
-const CANAL_VOZ_AUTO_ID    = "1510353414155149349";
 
 const economia            = {};
 const apostas             = {};
@@ -209,18 +204,6 @@ async function enviarDMPunicao(user, staffTag, acao, motivo) {
   } catch (err) {
     console.log(`[DM] Não foi possível enviar DM para ${user.tag}: ${err.message}`);
   }
-}
-
-// ============================================================
-// FUNÇÃO PARA ÁUDIO MUDO (VOZ AFK)
-// ============================================================
-function createSilenceStream() {
-  return new Readable({
-    read() {
-      const buffer = Buffer.alloc(4800 * 2);
-      this.push(buffer);
-    }
-  });
 }
 
 // ============================================================
@@ -450,25 +433,6 @@ client.once("ready", async () => {
           .setRequired(true)
           .setMinValue(1)
       ),
-
-    // Comando /call
-    new SlashCommandBuilder()
-      .setName("call")
-      .setDescription("[STAFF] Controla o bot no canal de voz")
-      .addSubcommand(sub => 
-        sub.setName("entrar")
-          .setDescription("Entra em um canal de voz")
-          .addChannelOption(opt => 
-            opt.setName("canal")
-              .setDescription("Canal de voz (opcional – usa o seu canal atual se omitido)")
-              .addChannelTypes(ChannelType.GuildVoice)
-              .setRequired(false)
-          )
-      )
-      .addSubcommand(sub =>
-        sub.setName("sair")
-          .setDescription("Sai do canal de voz atual")
-      ),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -484,47 +448,6 @@ client.once("ready", async () => {
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
     await enviarPainelAvaliacao(guild);
-
-    // ============================================================
-    // CONEXÃO AUTOMÁTICA AO CANAL DE VOZ (AFK)
-    // ============================================================
-    try {
-      const canalVoz = guild.channels.cache.get(CANAL_VOZ_AUTO_ID);
-      if (canalVoz && canalVoz.isVoiceBased()) {
-        const connection = joinVoiceChannel({
-          channelId: canalVoz.id,
-          guildId: guild.id,
-          adapterCreator: guild.voiceAdapterCreator,
-        });
-
-        const player = createAudioPlayer({
-          behaviors: { noSubscriber: NoSubscriberBehavior.Play },
-        });
-
-        const silenceStream = createSilenceStream();
-        const resource = createAudioResource(silenceStream, {
-          inputType: "raw",
-          inlineVolume: false,
-        });
-
-        player.play(resource);
-        connection.subscribe(player);
-
-        if (!client.voiceConnections) client.voiceConnections = new Map();
-        client.voiceConnections.set(guild.id, connection);
-
-        connection.on("disconnect", () => {
-          client.voiceConnections.delete(guild.id);
-          console.log("[VOZ] Desconectado do canal de voz.");
-        });
-
-        console.log(`[VOZ] Conectado ao canal ${canalVoz.name} (ID: ${canalVoz.id})`);
-      } else {
-        console.warn(`[VOZ] Canal de voz ${CANAL_VOZ_AUTO_ID} não encontrado ou não é um canal de voz.`);
-      }
-    } catch (err) {
-      console.error("[ERRO VOZ AUTO]", err.message);
-    }
   }
 });
 
@@ -1375,79 +1298,7 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /call ----
-  if (interaction.commandName === "call") {
-    if (!temCargoMod(interaction.member)) {
-      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
-    }
-
-    const sub = interaction.options.getSubcommand();
-
-    if (sub === "sair") {
-      const connection = client.voiceConnections?.get(interaction.guild.id);
-      if (!connection) {
-        return interaction.reply({ content: "❌ O bot não está em nenhum canal de voz neste servidor.", flags: 64 });
-      }
-      connection.destroy();
-      client.voiceConnections.delete(interaction.guild.id);
-      return interaction.reply({ content: "✅ Desconectado do canal de voz!", flags: 64 });
-    }
-
-    if (sub === "entrar") {
-      if (client.voiceConnections?.has(interaction.guild.id)) {
-        return interaction.reply({ content: "⚠️ O bot já está em um canal de voz. Use `/call sair` primeiro se quiser trocar.", flags: 64 });
-      }
-
-      let canal = interaction.options.getChannel("canal");
-      if (!canal) {
-        const member = interaction.member;
-        if (!member.voice.channel) {
-          return interaction.reply({ content: "❌ Você não está em um canal de voz e não especificou um canal.", flags: 64 });
-        }
-        canal = member.voice.channel;
-      }
-
-      if (!canal.isVoiceBased()) {
-        return interaction.reply({ content: "❌ O canal selecionado não é um canal de voz válido.", flags: 64 });
-      }
-
-      try {
-        const connection = joinVoiceChannel({
-          channelId: canal.id,
-          guildId: interaction.guild.id,
-          adapterCreator: interaction.guild.voiceAdapterCreator,
-        });
-
-        const player = createAudioPlayer({
-          behaviors: { noSubscriber: NoSubscriberBehavior.Play },
-        });
-
-        const silenceStream = createSilenceStream();
-        const resource = createAudioResource(silenceStream, {
-          inputType: "raw",
-          inlineVolume: false,
-        });
-
-        player.play(resource);
-        connection.subscribe(player);
-
-        if (!client.voiceConnections) client.voiceConnections = new Map();
-        client.voiceConnections.set(interaction.guild.id, connection);
-
-        connection.on("disconnect", () => {
-          client.voiceConnections.delete(interaction.guild.id);
-          console.log("[VOZ] Desconectado do canal de voz.");
-        });
-
-        await interaction.reply({ content: `✅ Conectado ao canal **${canal.name}**! Ficarei AFK por lá.`, flags: 64 });
-      } catch (err) {
-        console.error("[ERRO CALL]", err);
-        await interaction.reply({ content: "❌ Erro ao conectar ao canal de voz. Verifique permissões.", flags: 64 });
-      }
-    }
-  }
-
-  // ---- lockdown, unlockdown, esconder-canal, mostrar-canal, lock, unlock, slowmode, painel-ticket, painel-avaliacao, fechar-ticket ----
+  // ---- lockdown ----
   if (interaction.commandName === "lockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const motivo = interaction.options.getString("motivo") || "Sem motivo especificado"; await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let fechados = 0; for (const [, canal] of canais) { if (canal.id === CANAL_AVISO_ID || !canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: false }); fechados++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) { await canalAviso.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: true }); await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔒 SERVIDOR EM LOCKDOWN").setColor("Red").setDescription(`O servidor foi bloqueado.\n\n**Motivo:** ${motivo}`).setTimestamp()] }); } await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Lockdown Ativado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Motivo", value: motivo }, { name: "Canais fechados", value: `${fechados}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown ativado! **${fechados}** canais fechados.`); }
 
   if (interaction.commandName === "unlockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let abertos = 0; for (const [, canal] of canais) { if (!canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: true, ViewChannel: true }); abertos++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔓 LOCKDOWN ENCERRADO").setColor("Green").setDescription("O servidor foi reaberto! Podem falar normalmente.").setTimestamp()] }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Lockdown Desativado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canais abertos", value: `${abertos}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown desativado! **${abertos}** canais reabertos.`); }
