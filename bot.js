@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ComponentType } = require("discord.js");
 
 const client = new Client({
   intents: [
@@ -35,6 +35,11 @@ const COOLDOWN_AVALIACAO  = 24 * 60 * 60 * 1000;
 
 const CARGOS_ISENTOS   = ["1509304131263926292", "1508405150572871720"];
 const CARGOS_MODERACAO = ["1508405150572871720"];
+
+// ============================================================
+// GIVEAWAYS
+// ============================================================
+const giveaways = {}; // { messageId: { channelId, prize, winners, endTime, hostId, requiredRole, entered: [userId], ended: false, winnerIds: [] } }
 
 // ============================================================
 // STICKY MESSAGES
@@ -162,7 +167,8 @@ function getInventario(userId) {
 function formatarTempo(ms) {
   const horas   = Math.floor(ms / 3600000);
   const minutos = Math.floor((ms % 3600000) / 60000);
-  return `${horas}h ${minutos}m`;
+  const segundos = Math.floor((ms % 60000) / 1000);
+  return `${horas}h ${minutos}m ${segundos}s`;
 }
 function temCargoMod(member) {
   if (!member) return false;
@@ -298,6 +304,133 @@ async function enviarAvaliacaoDM(user, staffTag, categoria, guild) {
 }
 
 // ============================================================
+// FUNÇÕES DE GIVEAWAY
+// ============================================================
+async function atualizarGiveaway(messageId) {
+  const giveaway = giveaways[messageId];
+  if (!giveaway || giveaway.ended) return;
+
+  const agora = Date.now();
+  const tempoRestante = giveaway.endTime - agora;
+
+  if (tempoRestante <= 0) {
+    // Finalizar giveaway
+    await finalizarGiveaway(messageId);
+    return;
+  }
+
+  // Atualizar embed com contagem regressiva
+  const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
+  if (!canal) return;
+  const msg = await canal.messages.fetch(messageId).catch(() => null);
+  if (!msg) return;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🎉 GIVEAWAY: ${giveaway.prize}`)
+    .setColor("Gold")
+    .setDescription(`Clique no botão **Participar** para concorrer!\n\n**Tempo restante:** ${formatarTempo(tempoRestante)}\n**Vencedores:** ${giveaway.winners}\n**Participantes:** ${giveaway.entered.length}`)
+    .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"} • ID: ${messageId}` })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`giveaway_join_${messageId}`)
+      .setLabel("🎁 Participar")
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  await msg.edit({ embeds: [embed], components: [row] });
+}
+
+async function finalizarGiveaway(messageId) {
+  const giveaway = giveaways[messageId];
+  if (!giveaway || giveaway.ended) return;
+
+  giveaway.ended = true;
+
+  const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
+  if (!canal) return;
+  const msg = await canal.messages.fetch(messageId).catch(() => null);
+  if (!msg) return;
+
+  // Sortear vencedores
+  const participantes = giveaway.entered;
+  let vencedores = [];
+  const numeroVencedores = Math.min(giveaway.winners, participantes.length);
+
+  if (participantes.length === 0) {
+    // Ninguém participou
+    const embed = new EmbedBuilder()
+      .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
+      .setColor("Red")
+      .setDescription(`😢 Ninguém participou deste giveaway!`)
+      .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"}` })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`giveaway_ended_${messageId}`)
+        .setLabel("❌ Encerrado")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(true)
+    );
+
+    await msg.edit({ embeds: [embed], components: [row] });
+    delete giveaways[messageId];
+    return;
+  }
+
+  // Selecionar vencedores aleatoriamente
+  const shuffled = [...participantes];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  vencedores = shuffled.slice(0, numeroVencedores);
+
+  giveaway.winnerIds = vencedores;
+
+  // Mencionar vencedores
+  const mencoes = vencedores.map(id => `<@${id}>`).join(", ");
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
+    .setColor("Green")
+    .setDescription(`**Vencedor(es):** ${mencoes}\n\nParabéns aos ganhadores!`)
+    .addFields(
+      { name: "Total de participantes", value: `${participantes.length}`, inline: true },
+      { name: "Número de vencedores", value: `${vencedores.length}`, inline: true }
+    )
+    .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"}` })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`giveaway_ended_${messageId}`)
+      .setLabel("✅ Encerrado")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(true)
+  );
+
+  await msg.edit({ embeds: [embed], components: [row] });
+
+  // Log
+  const logEmbed = new EmbedBuilder()
+    .setTitle("🎁 Giveaway Finalizado")
+    .setColor("Green")
+    .addFields(
+      { name: "Prêmio", value: giveaway.prize },
+      { name: "Vencedores", value: mencoes || "Nenhum" },
+      { name: "Participantes", value: `${participantes.length}` }
+    )
+    .setTimestamp();
+  await enviarLogMod(canal.guild, logEmbed);
+
+  // Remover da lista de ativos
+  delete giveaways[messageId];
+}
+
+// ============================================================
 // BOT PRONTO
 // ============================================================
 client.once("ready", async () => {
@@ -418,7 +551,6 @@ client.once("ready", async () => {
       .addIntegerOption(opt => opt.setName("duracao").setDescription("Duração em minutos").setRequired(true))
       .addStringOption(opt => opt.setName("motivo").setDescription("Motivo do mute").setRequired(false)),
 
-    // Comando: Adicionar moedas a múltiplos usuários
     new SlashCommandBuilder()
       .setName("addmoedas")
       .setDescription("[STAFF] Adiciona ZéCoins a vários usuários de uma vez")
@@ -448,9 +580,6 @@ client.once("ready", async () => {
           )
       ),
 
-    // ============================================================
-    // 🆕 COMANDO /deletar-canal (STAFF APENAS)
-    // ============================================================
     new SlashCommandBuilder()
       .setName("deletar-canal")
       .setDescription("[STAFF] Deleta um canal do servidor (texto ou voz)")
@@ -463,6 +592,67 @@ client.once("ready", async () => {
         opt.setName("motivo")
           .setDescription("Motivo da deleção (opcional)")
           .setRequired(false)
+      ),
+
+    // ============================================================
+    // 🆕 COMANDOS DE GIVEAWAY
+    // ============================================================
+    new SlashCommandBuilder()
+      .setName("giveaway")
+      .setDescription("Sistema de giveaways")
+      .addSubcommand(sub =>
+        sub.setName("criar")
+          .setDescription("Cria um novo giveaway")
+          .addChannelOption(opt =>
+            opt.setName("canal")
+              .setDescription("Canal onde o giveaway será anunciado")
+              .setRequired(true)
+              .addChannelTypes(ChannelType.GuildText)
+          )
+          .addStringOption(opt =>
+            opt.setName("premio")
+              .setDescription("Prêmio do giveaway (ex: 10 ZéCoins)")
+              .setRequired(true)
+          )
+          .addStringOption(opt =>
+            opt.setName("duracao")
+              .setDescription("Duração (ex: 1h, 30m, 1d, 2d4h)")
+              .setRequired(true)
+          )
+          .addIntegerOption(opt =>
+            opt.setName("vencedores")
+              .setDescription("Número de vencedores (padrão: 1)")
+              .setRequired(false)
+              .setMinValue(1)
+              .setMaxValue(25)
+          )
+          .addRoleOption(opt =>
+            opt.setName("cargo_obrigatorio")
+              .setDescription("Cargo obrigatório para participar (opcional)")
+              .setRequired(false)
+          )
+      )
+      .addSubcommand(sub =>
+        sub.setName("reroll")
+          .setDescription("Sorteia novamente os vencedores de um giveaway encerrado")
+          .addStringOption(opt =>
+            opt.setName("mensagem_id")
+              .setDescription("ID da mensagem do giveaway")
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(sub =>
+        sub.setName("listar")
+          .setDescription("Lista todos os giveaways ativos no servidor")
+      )
+      .addSubcommand(sub =>
+        sub.setName("encerrar")
+          .setDescription("Encerra um giveaway ativo manualmente")
+          .addStringOption(opt =>
+            opt.setName("mensagem_id")
+              .setDescription("ID da mensagem do giveaway")
+              .setRequired(true)
+          )
       ),
   ];
 
@@ -480,6 +670,15 @@ client.once("ready", async () => {
   if (guild) {
     await enviarPainelAvaliacao(guild);
   }
+
+  // Iniciar loop de atualização de giveaways (a cada 15 segundos)
+  setInterval(async () => {
+    for (const messageId in giveaways) {
+      if (!giveaways[messageId].ended) {
+        await atualizarGiveaway(messageId);
+      }
+    }
+  }, 15000);
 });
 
 // ============================================================
@@ -827,7 +1026,44 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     // ============================================================
-    // 🆕 BOTÕES DO /deletar-canal
+    // BOTÕES DE GIVEAWAY
+    // ============================================================
+    if (interaction.customId.startsWith("giveaway_join_")) {
+      const messageId = interaction.customId.replace("giveaway_join_", "");
+      const giveaway = giveaways[messageId];
+      if (!giveaway || giveaway.ended) {
+        return interaction.reply({ content: "❌ Este giveaway já foi encerrado ou não existe mais.", flags: 64 });
+      }
+
+      // Verificar cargo obrigatório
+      if (giveaway.requiredRole) {
+        const member = interaction.member;
+        if (!member.roles.cache.has(giveaway.requiredRole)) {
+          const role = await interaction.guild.roles.fetch(giveaway.requiredRole).catch(() => null);
+          return interaction.reply({ content: `❌ Você precisa do cargo **${role ? role.name : "desconhecido"}** para participar deste giveaway!`, flags: 64 });
+        }
+      }
+
+      // Verificar se já participou
+      if (giveaway.entered.includes(interaction.user.id)) {
+        return interaction.reply({ content: "❌ Você já está participando deste giveaway!", flags: 64 });
+      }
+
+      // Adicionar participante
+      giveaway.entered.push(interaction.user.id);
+      await interaction.reply({ content: "✅ Você entrou no giveaway! Boa sorte! 🍀", flags: 64 });
+
+      // Atualizar embed com novo número de participantes
+      await atualizarGiveaway(messageId);
+    }
+
+    if (interaction.customId.startsWith("giveaway_ended_")) {
+      // Botão desabilitado, apenas responder com mensagem
+      return interaction.reply({ content: "Este giveaway já foi encerrado.", flags: 64 });
+    }
+
+    // ============================================================
+    // BOTÕES DO /deletar-canal
     // ============================================================
     if (interaction.customId.startsWith("confirmar_deletar_canal_")) {
       const canalId = interaction.customId.split("_")[3];
@@ -839,7 +1075,6 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      // Verifica novamente se é staff (segurança extra)
       if (!temCargoMod(interaction.member)) {
         return interaction.update({
           content: "❌ Você não tem permissão para deletar canais.",
@@ -851,7 +1086,6 @@ client.on("interactionCreate", async (interaction) => {
         const nomeCanal = canal.name;
         await canal.delete(`Deletado por ${interaction.user.tag}`);
 
-        // Log da ação
         const embedLog = new EmbedBuilder()
           .setTitle("🗑️ Canal Deletado")
           .setColor("Red")
@@ -1456,11 +1690,8 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ============================================================
-  // 🆕 COMANDO /deletar-canal (STAFF APENAS)
-  // ============================================================
+  // ---- /deletar-canal ----
   if (interaction.commandName === "deletar-canal") {
-    // Verifica se o usuário tem permissão de staff
     if (!temCargoMod(interaction.member)) {
       return interaction.reply({
         content: "❌ Você não tem permissão para usar este comando. Apenas staff pode deletar canais.",
@@ -1468,11 +1699,9 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // Pega o canal informado ou usa o canal atual
     const canal = interaction.options.getChannel("canal") || interaction.channel;
     const motivo = interaction.options.getString("motivo") || "Não informado";
 
-    // Impede deletar canais protegidos (opcional, mas recomendado)
     const canaisProtegidos = [
       CANAL_SUGESTOES_ID,
       CANAL_LOGS_MOD_ID,
@@ -1489,7 +1718,6 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // Confirmação com o usuário antes de deletar
     await interaction.reply({
       content: `⚠️ Você tem certeza que deseja deletar o canal **#${canal.name}**?\nMotivo: ${motivo}\n\nClique em **Confirmar** para prosseguir. Esta ação é **irreversível**.`,
       components: [
@@ -1506,6 +1734,202 @@ client.on("interactionCreate", async (interaction) => {
       ],
       flags: 64
     });
+  }
+
+  // ============================================================
+  // 🆕 COMANDOS DE GIVEAWAY
+  // ============================================================
+  if (interaction.commandName === "giveaway") {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === "criar") {
+      // Verificar permissão de staff
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Apenas staff pode criar giveaways.", flags: 64 });
+      }
+
+      const canal = interaction.options.getChannel("canal");
+      const premio = interaction.options.getString("premio");
+      const duracaoStr = interaction.options.getString("duracao");
+      const vencedores = interaction.options.getInteger("vencedores") || 1;
+      const requiredRole = interaction.options.getRole("cargo_obrigatorio")?.id || null;
+
+      // Converter duração (ex: 1h, 30m, 1d, 2d4h)
+      let duracaoMs = 0;
+      const match = duracaoStr.match(/(\d+)([hmsd])/g);
+      if (!match) {
+        return interaction.reply({ content: "❌ Formato de duração inválido. Use ex: `1h`, `30m`, `1d`, `2d4h`", flags: 64 });
+      }
+      for (const part of match) {
+        const num = parseInt(part);
+        const unit = part.slice(-1);
+        if (unit === 's') duracaoMs += num * 1000;
+        else if (unit === 'm') duracaoMs += num * 60 * 1000;
+        else if (unit === 'h') duracaoMs += num * 60 * 60 * 1000;
+        else if (unit === 'd') duracaoMs += num * 24 * 60 * 60 * 1000;
+      }
+
+      if (duracaoMs <= 0) {
+        return interaction.reply({ content: "❌ Duração deve ser maior que 0.", flags: 64 });
+      }
+
+      const endTime = Date.now() + duracaoMs;
+
+      // Criar embed do giveaway
+      const embed = new EmbedBuilder()
+        .setTitle(`🎉 GIVEAWAY: ${premio}`)
+        .setColor("Gold")
+        .setDescription(`Clique no botão **Participar** para concorrer!\n\n**Tempo restante:** ${formatarTempo(duracaoMs)}\n**Vencedores:** ${vencedores}\n**Participantes:** 0`)
+        .setFooter({ text: `Host: ${interaction.user.tag} • ID do host: ${interaction.user.id}` })
+        .setTimestamp();
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`giveaway_join_temp`) // será substituído após enviar
+          .setLabel("🎁 Participar")
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      // Enviar mensagem
+      const msg = await canal.send({ embeds: [embed], components: [row] });
+
+      // Armazenar giveaway
+      giveaways[msg.id] = {
+        channelId: canal.id,
+        prize: premio,
+        winners: vencedores,
+        endTime: endTime,
+        hostId: interaction.user.id,
+        hostTag: interaction.user.tag,
+        requiredRole: requiredRole,
+        entered: [],
+        ended: false,
+        winnerIds: [],
+      };
+
+      // Atualizar o customId do botão com o messageId
+      const newRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`giveaway_join_${msg.id}`)
+          .setLabel("🎁 Participar")
+          .setStyle(ButtonStyle.Primary)
+      );
+      await msg.edit({ components: [newRow] });
+
+      await interaction.reply({ content: `✅ Giveaway criado com sucesso em ${canal}!`, flags: 64 });
+
+      // Log
+      const logEmbed = new EmbedBuilder()
+        .setTitle("🎁 Giveaway Criado")
+        .setColor("Gold")
+        .addFields(
+          { name: "Prêmio", value: premio },
+          { name: "Canal", value: `${canal}` },
+          { name: "Duração", value: formatarTempo(duracaoMs) },
+          { name: "Vencedores", value: `${vencedores}` },
+          { name: "Cargo obrigatório", value: requiredRole ? `<@&${requiredRole}>` : "Nenhum" }
+        )
+        .setTimestamp();
+      await enviarLogMod(interaction.guild, logEmbed);
+    }
+
+    else if (sub === "reroll") {
+      // Verificar permissão de staff
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Apenas staff pode usar reroll.", flags: 64 });
+      }
+
+      const messageId = interaction.options.getString("mensagem_id");
+      const giveaway = giveaways[messageId];
+
+      if (!giveaway) {
+        return interaction.reply({ content: "❌ Giveaway não encontrado ou já removido.", flags: 64 });
+      }
+
+      if (!giveaway.ended) {
+        return interaction.reply({ content: "❌ Este giveaway ainda está ativo. Espere ele terminar ou use `/giveaway encerrar` primeiro.", flags: 64 });
+      }
+
+      const participantes = giveaway.entered;
+      if (participantes.length === 0) {
+        return interaction.reply({ content: "❌ Ninguém participou deste giveaway. Não é possível reroll.", flags: 64 });
+      }
+
+      // Sortear novamente
+      const shuffled = [...participantes];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      const novosVencedores = shuffled.slice(0, giveaway.winners);
+      giveaway.winnerIds = novosVencedores;
+
+      const mencoes = novosVencedores.map(id => `<@${id}>`).join(", ");
+
+      // Atualizar mensagem do giveaway (já que ela está com embed de encerrado)
+      const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
+      if (canal) {
+        const msg = await canal.messages.fetch(messageId).catch(() => null);
+        if (msg) {
+          const embed = EmbedBuilder.from(msg.embeds[0]);
+          embed.setDescription(`**Novo(s) vencedor(es):** ${mencoes}`);
+          await msg.edit({ embeds: [embed] });
+        }
+      }
+
+      await interaction.reply({ content: `🎉 **Novos vencedores sorteados!** ${mencoes}`, flags: 64 });
+
+      // Log
+      const logEmbed = new EmbedBuilder()
+        .setTitle("🎁 Reroll de Giveaway")
+        .setColor("Gold")
+        .addFields(
+          { name: "Prêmio", value: giveaway.prize },
+          { name: "Novos vencedores", value: mencoes }
+        )
+        .setTimestamp();
+      await enviarLogMod(interaction.guild, logEmbed);
+    }
+
+    else if (sub === "listar") {
+      const ativos = Object.entries(giveaways).filter(([_, g]) => !g.ended);
+      if (ativos.length === 0) {
+        return interaction.reply({ content: "📭 Não há giveaways ativos no momento.", flags: 64 });
+      }
+
+      const linhas = ativos.map(([id, g]) => {
+        const tempoRestante = g.endTime - Date.now();
+        return `**${g.prize}** — <#${g.channelId}> — ${formatarTempo(tempoRestante)} restante — ${g.entered.length} participantes — ID: \`${id}\``;
+      });
+
+      const embed = new EmbedBuilder()
+        .setTitle("🎁 Giveaways Ativos")
+        .setColor("Blue")
+        .setDescription(linhas.join("\n\n") || "Nenhum.")
+        .setTimestamp();
+      await interaction.reply({ embeds: [embed], flags: 64 });
+    }
+
+    else if (sub === "encerrar") {
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Apenas staff pode encerrar giveaways.", flags: 64 });
+      }
+
+      const messageId = interaction.options.getString("mensagem_id");
+      const giveaway = giveaways[messageId];
+
+      if (!giveaway) {
+        return interaction.reply({ content: "❌ Giveaway não encontrado ou já removido.", flags: 64 });
+      }
+
+      if (giveaway.ended) {
+        return interaction.reply({ content: "❌ Este giveaway já foi encerrado.", flags: 64 });
+      }
+
+      // Forçar finalização
+      await finalizarGiveaway(messageId);
+      await interaction.reply({ content: `✅ Giveaway **${giveaway.prize}** foi encerrado manualmente.`, flags: 64 });
+    }
   }
 
   // ---- lockdown ----
