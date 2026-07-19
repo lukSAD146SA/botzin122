@@ -434,7 +434,6 @@ client.once("ready", async () => {
           .setMinValue(1)
       ),
 
-    // 🆕 COMANDO /formulario com opção de canal
     new SlashCommandBuilder()
       .setName("formulario")
       .setDescription("[STAFF] Gerencia o formulário de recrutamento")
@@ -447,6 +446,23 @@ client.once("ready", async () => {
               .setRequired(false)
               .addChannelTypes(ChannelType.GuildText)
           )
+      ),
+
+    // ============================================================
+    // 🆕 COMANDO /deletar-canal (STAFF APENAS)
+    // ============================================================
+    new SlashCommandBuilder()
+      .setName("deletar-canal")
+      .setDescription("[STAFF] Deleta um canal do servidor (texto ou voz)")
+      .addChannelOption(opt =>
+        opt.setName("canal")
+          .setDescription("Canal a ser deletado (se omitido, usa o canal atual)")
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName("motivo")
+          .setDescription("Motivo da deleção (opcional)")
+          .setRequired(false)
       ),
   ];
 
@@ -809,6 +825,64 @@ client.on("interactionCreate", async (interaction) => {
         components: [],
       });
     }
+
+    // ============================================================
+    // 🆕 BOTÕES DO /deletar-canal
+    // ============================================================
+    if (interaction.customId.startsWith("confirmar_deletar_canal_")) {
+      const canalId = interaction.customId.split("_")[3];
+      const canal = await interaction.guild.channels.fetch(canalId).catch(() => null);
+      if (!canal) {
+        return interaction.update({
+          content: "❌ Este canal já foi deletado ou não existe mais.",
+          components: []
+        });
+      }
+
+      // Verifica novamente se é staff (segurança extra)
+      if (!temCargoMod(interaction.member)) {
+        return interaction.update({
+          content: "❌ Você não tem permissão para deletar canais.",
+          components: []
+        });
+      }
+
+      try {
+        const nomeCanal = canal.name;
+        await canal.delete(`Deletado por ${interaction.user.tag}`);
+
+        // Log da ação
+        const embedLog = new EmbedBuilder()
+          .setTitle("🗑️ Canal Deletado")
+          .setColor("Red")
+          .addFields(
+            { name: "Staff", value: interaction.user.tag },
+            { name: "Canal deletado", value: `#${nomeCanal}` },
+            { name: "ID do canal", value: canalId }
+          )
+          .setTimestamp();
+        await enviarLogMod(interaction.guild, embedLog);
+
+        await interaction.update({
+          content: `✅ O canal **#${nomeCanal}** foi deletado com sucesso por ${interaction.user}.`,
+          components: []
+        });
+      } catch (err) {
+        console.error("[ERRO DELETAR CANAL]", err);
+        await interaction.update({
+          content: "❌ Erro ao deletar o canal. Verifique minhas permissões (preciso de `Gerenciar Canais`).",
+          components: []
+        });
+      }
+    }
+
+    if (interaction.customId === "cancelar_deletar_canal") {
+      await interaction.update({
+        content: "❌ Operação cancelada. Nenhum canal foi deletado.",
+        components: []
+      });
+    }
+
     return;
   }
 
@@ -1330,24 +1404,18 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /formulario ativar (COM ESCOLHA DE CANAL E DEFER REPLY) ----
+  // ---- /formulario ativar ----
   if (interaction.commandName === "formulario") {
     const sub = interaction.options.getSubcommand();
     if (sub === "ativar") {
-      // Verifica permissão de staff
       if (!temCargoMod(interaction.member)) {
         return interaction.reply({ content: "❌ Apenas staff pode usar este comando.", flags: 64 });
       }
-
-      // 🔥 Adia a resposta para evitar timeout
-      await interaction.deferReply({ flags: 64 }); // ephemeral
-
-      // Canal opcional: se não fornecido, usa o canal atual
+      await interaction.deferReply({ flags: 64 });
       const canalDestino = interaction.options.getChannel("canal") || interaction.channel;
       if (canalDestino.type !== ChannelType.GuildText) {
         return interaction.editReply({ content: "❌ O canal deve ser de texto." });
       }
-
       const embed = new EmbedBuilder()
         .setTitle("📋 Formulário Skyland")
         .setDescription(
@@ -1362,7 +1430,7 @@ client.on("interactionCreate", async (interaction) => {
           "Se tiver interesse, preencha o formulário e aguarde a análise da equipe. Boa sorte!"
         )
         .setColor("Blue")
-        .setImage("https://i.imgur.com/tov858d.png") // imagem fornecida
+        .setImage("https://i.imgur.com/tov858d.png")
         .setFooter({ text: "Skyland • Recrutamento" })
         .setTimestamp();
 
@@ -1379,15 +1447,65 @@ client.on("interactionCreate", async (interaction) => {
       );
 
       try {
-        // Envia a mensagem no canal escolhido
         await canalDestino.send({ embeds: [embed], components: [row] });
-        // Responde ao staff confirmando
         await interaction.editReply({ content: `✅ Formulário ativado com sucesso em ${canalDestino}!` });
       } catch (err) {
         console.error("[ERRO FORMULARIO]", err);
         await interaction.editReply({ content: "❌ Erro ao enviar o formulário. Verifique se tenho permissão no canal e se o link é válido." });
       }
     }
+  }
+
+  // ============================================================
+  // 🆕 COMANDO /deletar-canal (STAFF APENAS)
+  // ============================================================
+  if (interaction.commandName === "deletar-canal") {
+    // Verifica se o usuário tem permissão de staff
+    if (!temCargoMod(interaction.member)) {
+      return interaction.reply({
+        content: "❌ Você não tem permissão para usar este comando. Apenas staff pode deletar canais.",
+        flags: 64
+      });
+    }
+
+    // Pega o canal informado ou usa o canal atual
+    const canal = interaction.options.getChannel("canal") || interaction.channel;
+    const motivo = interaction.options.getString("motivo") || "Não informado";
+
+    // Impede deletar canais protegidos (opcional, mas recomendado)
+    const canaisProtegidos = [
+      CANAL_SUGESTOES_ID,
+      CANAL_LOGS_MOD_ID,
+      CANAL_LOGS_TICKET_ID,
+      CANAL_AVISO_ID,
+      CANAL_TICKET_PAINEL,
+      CANAL_AVALIACOES_ID,
+      CANAL_AVALIACOES_LOGS_ID
+    ];
+    if (canaisProtegidos.includes(canal.id)) {
+      return interaction.reply({
+        content: "❌ Este canal é protegido e não pode ser deletado por segurança.",
+        flags: 64
+      });
+    }
+
+    // Confirmação com o usuário antes de deletar
+    await interaction.reply({
+      content: `⚠️ Você tem certeza que deseja deletar o canal **#${canal.name}**?\nMotivo: ${motivo}\n\nClique em **Confirmar** para prosseguir. Esta ação é **irreversível**.`,
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`confirmar_deletar_canal_${canal.id}`)
+            .setLabel("✅ Confirmar")
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
+            .setCustomId(`cancelar_deletar_canal`)
+            .setLabel("❌ Cancelar")
+            .setStyle(ButtonStyle.Secondary)
+        )
+      ],
+      flags: 64
+    });
   }
 
   // ---- lockdown ----
