@@ -38,7 +38,7 @@ const CARGOS_ISENTOS = ["1509304131263926292", "1508405150572871720"];
 const CARGOS_MODERACAO = ["1508405150572871720"];
 
 // ============================================================
-// PERSISTÊNCIA DE DADOS (JSON)
+// PERSISTÊNCIA DE DADOS (JSON) - COM CRIAÇÃO FORÇADA
 // ============================================================
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) {
@@ -54,19 +54,22 @@ const DATA_FILES = {
   sorteExtraAtivo: 'sorteExtraAtivo.json',
 };
 
-// Criar arquivos vazios se não existirem
+// FORÇAR CRIAÇÃO DE TODOS OS ARQUIVOS JSON VAZIOS
 for (const [key, fileName] of Object.entries(DATA_FILES)) {
   const filePath = path.join(DATA_DIR, fileName);
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, JSON.stringify({}, null, 2));
-    console.log(`📄 Arquivo criado: ${fileName}`);
+    console.log(`📄 Arquivo criado (forçado): ${fileName}`);
+  } else {
+    console.log(`✅ Arquivo já existe: ${fileName}`);
   }
 }
 
 function loadData(fileName) {
   const filePath = path.join(DATA_DIR, fileName);
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return data;
   } catch (e) {
     console.error(`Erro ao carregar ${fileName}:`, e);
     return {};
@@ -89,7 +92,7 @@ let giveaways = loadData(DATA_FILES.giveaways);
 let ultimaAvaliacao = loadData(DATA_FILES.ultimaAvaliacao);
 let sorteExtraAtivo = loadData(DATA_FILES.sorteExtraAtivo);
 
-// Salvar periodicamente
+// Salvar periodicamente (a cada 30 segundos)
 setInterval(() => {
   saveData(DATA_FILES.economia, economia);
   saveData(DATA_FILES.inventarios, inventarios);
@@ -448,6 +451,19 @@ function contemPalavraGrave(texto) {
 // ============================================================
 client.once("ready", async () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
+
+  // Verificar se a pasta data e os arquivos existem (reforço)
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR);
+    console.log("📁 Pasta 'data' criada (durante o ready).");
+  }
+  for (const [key, fileName] of Object.entries(DATA_FILES)) {
+    const filePath = path.join(DATA_DIR, fileName);
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(filePath, JSON.stringify({}, null, 2));
+      console.log(`📄 Arquivo criado (durante o ready): ${fileName}`);
+    }
+  }
 
   // Registrar comandos
   const commands = [
