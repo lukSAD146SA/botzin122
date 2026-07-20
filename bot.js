@@ -1,4 +1,7 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ComponentType } = require("discord.js");
+require('dotenv').config();
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+const fs = require('fs');
+const path = require('path');
 
 const client = new Client({
   intents: [
@@ -10,56 +13,350 @@ const client = new Client({
   ],
 });
 
-const TOKEN                = process.env.TOKEN;
-const GUILD_ID             = "1508302017980924064";
-const CANAL_SUGESTOES_ID   = "1511518813701804062";
-const CANAL_LOGS_MOD_ID    = "1523437994848157797";
+const TOKEN = process.env.TOKEN;
+const GUILD_ID = "1508302017980924064";
+const CANAL_SUGESTOES_ID = "1511518813701804062";
+const CANAL_LOGS_MOD_ID = "1523437994848157797";
 const CANAL_LOGS_TICKET_ID = "1510353328821764289";
-const CANAL_AVISO_ID       = "1508390560795197500";
-const CANAL_TICKET_PAINEL  = "1509269400774115489";
+const CANAL_AVISO_ID = "1508390560795197500";
+const CANAL_TICKET_PAINEL = "1509269400774115489";
 const CATEGORIA_TICKETS_ID = "1522720316785295541";
-const CARGO_STAFF_ID       = "1508405150572871720";
-const CARGO_SUPORTE_ID     = "1513399309306036355";
-const CANAL_AVALIACOES_ID  = "1524630141182021682";
+const CARGO_STAFF_ID = "1508405150572871720";
+const CARGO_SUPORTE_ID = "1513399309306036355";
+const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
-const TAXA_TRANSFERENCIA   = 0.05;
+const TAXA_TRANSFERENCIA = 0.05;
 
-const economia            = {};
-const apostas             = {};
-const inventarios         = {};
-const tickets             = {};
-const avaliacoesPendentes = {};
-const ultimaAvaliacao     = {};
-const sorteExtraAtivo     = {};
-const COOLDOWN_AVALIACAO  = 24 * 60 * 60 * 1000;
-
-const CARGOS_ISENTOS   = ["1509304131263926292", "1508405150572871720"];
+const CARGOS_ISENTOS = ["1509304131263926292", "1508405150572871720"];
 const CARGOS_MODERACAO = ["1508405150572871720"];
+const COOLDOWN_AVALIACAO = 24 * 60 * 60 * 1000;
 
 // ============================================================
-// GIVEAWAYS
+// PERSISTÊNCIA DE DADOS (JSON)
 // ============================================================
-const giveaways = {}; // { messageId: { channelId, prize, winners, endTime, hostId, requiredRole, entered: [userId], ended: false, winnerIds: [] } }
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+
+const DATA_FILES = {
+  economia: 'economia.json',
+  inventarios: 'inventarios.json',
+  giveaways: 'giveaways.json',
+  ultimaAvaliacao: 'ultimaAvaliacao.json',
+  sorteExtraAtivo: 'sorteExtraAtivo.json',
+};
+
+function loadData(fileName) {
+  const filePath = path.join(DATA_DIR, fileName);
+  if (fs.existsSync(filePath)) {
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (e) {
+      console.error(`Erro ao carregar ${fileName}:`, e);
+      return {};
+    }
+  }
+  return {};
+}
+
+function saveData(fileName, data) {
+  const filePath = path.join(DATA_DIR, fileName);
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.error(`Erro ao salvar ${fileName}:`, e);
+  }
+}
+
+// Carregar dados
+let economia = loadData(DATA_FILES.economia);
+let inventarios = loadData(DATA_FILES.inventarios);
+let giveaways = loadData(DATA_FILES.giveaways);
+let ultimaAvaliacao = loadData(DATA_FILES.ultimaAvaliacao);
+let sorteExtraAtivo = loadData(DATA_FILES.sorteExtraAtivo);
+
+// Salvar periodicamente
+setInterval(() => {
+  saveData(DATA_FILES.economia, economia);
+  saveData(DATA_FILES.inventarios, inventarios);
+  saveData(DATA_FILES.giveaways, giveaways);
+  saveData(DATA_FILES.ultimaAvaliacao, ultimaAvaliacao);
+  saveData(DATA_FILES.sorteExtraAtivo, sorteExtraAtivo);
+}, 30000);
+
+function saveAll() {
+  saveData(DATA_FILES.economia, economia);
+  saveData(DATA_FILES.inventarios, inventarios);
+  saveData(DATA_FILES.giveaways, giveaways);
+  saveData(DATA_FILES.ultimaAvaliacao, ultimaAvaliacao);
+  saveData(DATA_FILES.sorteExtraAtivo, sorteExtraAtivo);
+}
 
 // ============================================================
-// STICKY MESSAGES
+// DADOS EM MEMÓRIA (não persistentes)
 // ============================================================
+const apostas = {};
+const tickets = {};
+const avaliacoesPendentes = {};
 const stickyMessages = {};
 
 // ============================================================
 // LOJA
 // ============================================================
 const LOJA = [
-  { id: "vip",          nome: "🌟 Cargo VIP",                 preco: 500,   roleId: "1521544208073228528", tipo: "cargo" },
-  { id: "silenciador",  nome: "🔇 Silenciador",               preco: 5000,  tipo: "item", descricao: "Muta alguém por 5 minutos." },
-  { id: "apelido",      nome: "🏷️ Apelido",                   preco: 1000,  tipo: "item", descricao: "Muda o apelido de alguém por 1h." },
-  { id: "caixa",        nome: "🎁 Caixa Misteriosa",          preco: 5000,  tipo: "item", descricao: "Ganhe entre 100 e 10.000 ZéCoins." },
-  { id: "ficha_roblox", nome: "🎟️ Ficha de Serviço Roblox",  preco: 12000, tipo: "item", descricao: "Ficha para serviços Roblox. Abra um ticket para usar!" },
-  { id: "sorte_extra",  nome: "🍀 Sorte Extra",               preco: 1000,  tipo: "item", descricao: "Ganha 50% de bônus no /trabalhar por 24h!" },
+  { id: "vip", nome: "🌟 Cargo VIP", preco: 500, roleId: "1521544208073228528", tipo: "cargo" },
+  { id: "silenciador", nome: "🔇 Silenciador", preco: 5000, tipo: "item", descricao: "Muta alguém por 5 minutos." },
+  { id: "apelido", nome: "🏷️ Apelido", preco: 1000, tipo: "item", descricao: "Muda o apelido de alguém por 1h." },
+  { id: "caixa", nome: "🎁 Caixa Misteriosa", preco: 5000, tipo: "item", descricao: "Ganhe entre 100 e 10.000 ZéCoins." },
+  { id: "ficha_roblox", nome: "🎟️ Ficha de Serviço Roblox", preco: 12000, tipo: "item", descricao: "Ficha para serviços Roblox. Abra um ticket para usar!" },
+  { id: "sorte_extra", nome: "🍀 Sorte Extra", preco: 1000, tipo: "item", descricao: "Ganha 50% de bônus no /trabalhar por 24h!" },
 ];
 
 // ============================================================
-// OFUSCADOR LUAU
+// FUNÇÕES AUXILIARES
+// ============================================================
+function getPerfil(userId) {
+  if (!economia[userId]) economia[userId] = { saldo: 0, ultimoDiario: 0, ultimoTrabalho: 0 };
+  return economia[userId];
+}
+function getInventario(userId) {
+  if (!inventarios[userId]) inventarios[userId] = {};
+  return inventarios[userId];
+}
+function formatarTempo(ms) {
+  if (ms < 0) ms = 0;
+  const horas = Math.floor(ms / 3600000);
+  const minutos = Math.floor((ms % 3600000) / 60000);
+  const segundos = Math.floor((ms % 60000) / 1000);
+  let str = '';
+  if (horas > 0) str += `${horas}h `;
+  if (minutos > 0) str += `${minutos}m `;
+  if (segundos > 0 || str === '') str += `${segundos}s`;
+  return str.trim();
+}
+function temCargoMod(member) {
+  if (!member) return false;
+  return member.permissions.has(PermissionFlagsBits.Administrator) ||
+    CARGOS_MODERACAO.some((id) => member.roles.cache.has(id));
+}
+
+async function enviarLogMod(guild, embed) {
+  try {
+    const canal = await guild.channels.fetch(CANAL_LOGS_MOD_ID).catch(() => null);
+    if (canal) await canal.send({ embeds: [embed] });
+  } catch (err) { console.error("[ERRO LOG MOD]", err.message); }
+}
+
+async function enviarLogTicket(guild, embed, files = []) {
+  try {
+    const canal = await guild.channels.fetch(CANAL_LOGS_TICKET_ID).catch(() => null);
+    if (canal) await canal.send({ embeds: [embed], files });
+  } catch (err) { console.error("[ERRO LOG TICKET]", err.message); }
+}
+
+async function enviarDMPunicao(user, staffTag, acao, motivo) {
+  try {
+    const embed = new EmbedBuilder()
+      .setTitle(`🔨 Você foi ${acao}`)
+      .setColor("Red")
+      .setDescription(`Verificamos que você descumpriu uma ou mais regras do servidor.\n\n**Nota do staff:** ${motivo || "Não informado"}`)
+      .setFooter({ text: `Staff responsável: ${staffTag}` })
+      .setTimestamp();
+    await user.send({ embeds: [embed] });
+  } catch (err) { console.log(`[DM] Não foi possível enviar DM para ${user.tag}: ${err.message}`); }
+}
+
+// ============================================================
+// FUNÇÕES DE GIVEAWAY
+// ============================================================
+async function atualizarGiveaway(messageId) {
+  const giveaway = giveaways[messageId];
+  if (!giveaway || giveaway.ended) return;
+
+  const agora = Date.now();
+  const tempoRestante = giveaway.endTime - agora;
+
+  if (tempoRestante <= 0) {
+    await finalizarGiveaway(messageId);
+    return;
+  }
+
+  const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
+  if (!canal) return;
+  const msg = await canal.messages.fetch(messageId).catch(() => null);
+  if (!msg) return;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🎉 GIVEAWAY: ${giveaway.prize}`)
+    .setColor("Gold")
+    .setDescription(`Clique no botão **Participar** para concorrer!\n\n**Tempo restante:** ${formatarTempo(tempoRestante)}\n**Vencedores:** ${giveaway.winners}\n**Participantes:** ${giveaway.entered.length}`)
+    .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"} • ID: ${messageId}` })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`giveaway_join_${messageId}`)
+      .setLabel("🎁 Participar")
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  await msg.edit({ embeds: [embed], components: [row] });
+}
+
+async function finalizarGiveaway(messageId) {
+  const giveaway = giveaways[messageId];
+  if (!giveaway || giveaway.ended) return;
+
+  giveaway.ended = true;
+  const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
+  if (!canal) return;
+  const msg = await canal.messages.fetch(messageId).catch(() => null);
+  if (!msg) return;
+
+  const participantes = giveaway.entered;
+  let vencedores = [];
+  const numeroVencedores = Math.min(giveaway.winners, participantes.length);
+
+  if (participantes.length === 0) {
+    const embed = new EmbedBuilder()
+      .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
+      .setColor("Red")
+      .setDescription(`😢 Ninguém participou deste giveaway!`)
+      .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"}` })
+      .setTimestamp();
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`giveaway_ended_${messageId}`)
+        .setLabel("❌ Encerrado")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(true)
+    );
+    await msg.edit({ embeds: [embed], components: [row] });
+    delete giveaways[messageId];
+    saveData(DATA_FILES.giveaways, giveaways);
+    return;
+  }
+
+  const shuffled = [...participantes];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  vencedores = shuffled.slice(0, numeroVencedores);
+  giveaway.winnerIds = vencedores;
+
+  const mencoes = vencedores.map(id => `<@${id}>`).join(", ");
+  const embed = new EmbedBuilder()
+    .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
+    .setColor("Green")
+    .setDescription(`**Vencedor(es):** ${mencoes}\n\nParabéns aos ganhadores!`)
+    .addFields(
+      { name: "Total de participantes", value: `${participantes.length}`, inline: true },
+      { name: "Número de vencedores", value: `${vencedores.length}`, inline: true }
+    )
+    .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"}` })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`giveaway_ended_${messageId}`)
+      .setLabel("✅ Encerrado")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(true)
+  );
+  await msg.edit({ embeds: [embed], components: [row] });
+
+  const logEmbed = new EmbedBuilder()
+    .setTitle("🎁 Giveaway Finalizado")
+    .setColor("Green")
+    .addFields(
+      { name: "Prêmio", value: giveaway.prize },
+      { name: "Vencedores", value: mencoes || "Nenhum" },
+      { name: "Participantes", value: `${participantes.length}` }
+    )
+    .setTimestamp();
+  await enviarLogMod(canal.guild, logEmbed);
+
+  delete giveaways[messageId];
+  saveData(DATA_FILES.giveaways, giveaways);
+}
+
+// ============================================================
+// PAINEL DE TICKET E AVALIAÇÃO (funções existentes)
+// ============================================================
+async function enviarPainelTicket(guild) {
+  try {
+    const canal = await guild.channels.fetch(CANAL_TICKET_PAINEL).catch(() => null);
+    if (!canal) return;
+    const msgs = await canal.messages.fetch({ limit: 20 }).catch(() => []);
+    const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
+    for (const [, msg] of botMsgs) { try { await msg.delete(); } catch {} }
+    const embed = new EmbedBuilder()
+      .setTitle("Suporte do Zé")
+      .setDescription("Clique abaixo para abrir seu ticket!")
+      .setColor("Yellow")
+      .setImage("https://i.imgur.com/6sSikdc.png")
+      .setFooter({ text: "Suporte Do Zé" });
+    const select = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("ticket_categoria")
+        .setPlaceholder("Escolha uma opção para sua Dúvida.")
+        .addOptions(
+          new StringSelectMenuOptionBuilder().setLabel("📜 Dúvida Script").setDescription("Dúvidas sobre scripts").setValue("duvida_script").setEmoji("📜"),
+          new StringSelectMenuOptionBuilder().setLabel("⚙️ Dúvida Executor").setDescription("Dúvidas sobre executores").setValue("duvida_executor").setEmoji("⚙️"),
+          new StringSelectMenuOptionBuilder().setLabel("💬 Outros").setDescription("Outros assuntos").setValue("outros").setEmoji("💬")
+        )
+    );
+    await canal.send({ embeds: [embed], components: [select] });
+    console.log("[TICKET] Painel enviado!");
+  } catch (err) { console.error("[ERRO PAINEL TICKET]", err.message); }
+}
+
+async function enviarPainelAvaliacao(guild) {
+  try {
+    const canal = await guild.channels.fetch(CANAL_AVALIACOES_ID).catch(() => null);
+    if (!canal) return;
+    const msgs = await canal.messages.fetch({ limit: 20 }).catch(() => []);
+    const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
+    for (const [, msg] of botMsgs) { try { await msg.delete(); } catch {} }
+    const embed = new EmbedBuilder()
+      .setTitle("Central de Avaliações Staff")
+      .setDescription(`Sua opinião é muito importante para nós! Clique no botão abaixo para avaliar um membro da staff.\n\n🌟 **Você ganha 200 ZéCoins por cada avaliação!** (a cada 24h)`)
+      .setColor("Blue")
+      .setImage("https://i.imgur.com/WxAC08v.png")
+      .setFooter({ text: "Avalie nossa equipe e ganhe recompensas!" });
+    const button = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("abrir_modal_avaliacao")
+        .setLabel("💡 Enviar Avaliação")
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji("💡")
+    );
+    await canal.send({ embeds: [embed], components: [button] });
+    console.log("[AVALIACAO] Painel de avaliação enviado!");
+  } catch (err) { console.error("[ERRO PAINEL AVALIACAO]", err.message); }
+}
+
+async function enviarAvaliacaoDM(user, staffTag, categoria, guild) {
+  try {
+    const embed = new EmbedBuilder()
+      .setTitle("⭐ Avalie o atendimento!")
+      .setColor("Gold")
+      .setDescription(`Seu ticket foi fechado.\n\n**Staff que te atendeu:** ${staffTag}\n**Categoria:** ${categoria}\n\nComo você avalia o atendimento?`)
+      .setFooter({ text: "Clique em uma estrela para avaliar" });
+    const botoes = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("avaliacao_ticket_1").setLabel("⭐").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("avaliacao_ticket_2").setLabel("⭐⭐").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("avaliacao_ticket_3").setLabel("⭐⭐⭐").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("avaliacao_ticket_4").setLabel("⭐⭐⭐⭐").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("avaliacao_ticket_5").setLabel("⭐⭐⭐⭐⭐").setStyle(ButtonStyle.Success)
+    );
+    await user.send({ embeds: [embed], components: [botoes] });
+    avaliacoesPendentes[user.id] = { staffTag, categoria, guildId: guild.id };
+  } catch (err) { console.error("[ERRO DM AVALIAÇÃO]", err.message); }
+}
+
+// ============================================================
+// OFUSCADOR LUAU (mantido)
 // ============================================================
 function ofuscarLuau(codigo) {
   function nomeAleatorio(tamanho = 8) {
@@ -68,24 +365,20 @@ function ofuscarLuau(codigo) {
     for (let i = 0; i < tamanho; i++) nome += chars[Math.floor(Math.random() * chars.length)];
     return nome;
   }
-
   const base64 = Buffer.from(codigo).toString("base64");
-
   const chunkSize = 20;
-  const chunks    = [];
+  const chunks = [];
   for (let i = 0; i < base64.length; i += chunkSize) {
     chunks.push(base64.slice(i, i + chunkSize));
   }
-
-  const varTabela   = nomeAleatorio();
-  const varBase64   = nomeAleatorio();
-  const varDecode   = nomeAleatorio();
-  const varResult   = nomeAleatorio();
-  const varLoad     = nomeAleatorio();
-  const varJunk1    = nomeAleatorio();
-  const varJunk2    = nomeAleatorio();
-  const varJunk3    = nomeAleatorio();
-
+  const varTabela = nomeAleatorio();
+  const varBase64 = nomeAleatorio();
+  const varDecode = nomeAleatorio();
+  const varResult = nomeAleatorio();
+  const varLoad = nomeAleatorio();
+  const varJunk1 = nomeAleatorio();
+  const varJunk2 = nomeAleatorio();
+  const varJunk3 = nomeAleatorio();
   function gerarLixo() {
     const ops = [
       `local ${nomeAleatorio()} = math.random(1, 9999)`,
@@ -96,9 +389,7 @@ function ofuscarLuau(codigo) {
     ];
     return ops[Math.floor(Math.random() * ops.length)];
   }
-
   const linhasLixo = Array.from({ length: 6 }, () => gerarLixo());
-
   const codigoOfuscado = `-- ${nomeAleatorio(16)}
 ${linhasLixo[0]}
 ${linhasLixo[1]}
@@ -131,7 +422,6 @@ ${linhasLixo[5]}
 local ${varLoad} = loadstring(${varResult})
 if ${varLoad} then ${varLoad}() end
 -- ${nomeAleatorio(16)}`;
-
   return codigoOfuscado;
 }
 
@@ -145,7 +435,6 @@ const PALAVRAS_GRAVES = [
   "macaco", "macaca",
   "b1o", "vendas", "venda", "vender",
 ];
-
 function contemPalavraGrave(texto) {
   return PALAVRAS_GRAVES.some((p) => {
     const regex = new RegExp(`\\b${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}+\\b`, "gi");
@@ -154,510 +443,60 @@ function contemPalavraGrave(texto) {
 }
 
 // ============================================================
-// FUNÇÕES AUXILIARES
-// ============================================================
-function getPerfil(userId) {
-  if (!economia[userId]) economia[userId] = { saldo: 0, ultimoDiario: 0, ultimoTrabalho: 0 };
-  return economia[userId];
-}
-function getInventario(userId) {
-  if (!inventarios[userId]) inventarios[userId] = {};
-  return inventarios[userId];
-}
-function formatarTempo(ms) {
-  const horas   = Math.floor(ms / 3600000);
-  const minutos = Math.floor((ms % 3600000) / 60000);
-  const segundos = Math.floor((ms % 60000) / 1000);
-  return `${horas}h ${minutos}m ${segundos}s`;
-}
-function temCargoMod(member) {
-  if (!member) return false;
-  return member.permissions.has(PermissionFlagsBits.Administrator) ||
-    CARGOS_MODERACAO.some((id) => member.roles.cache.has(id));
-}
-
-async function enviarLogMod(guild, embed) {
-  try {
-    const canal = await guild.channels.fetch(CANAL_LOGS_MOD_ID).catch(() => null);
-    if (canal) await canal.send({ embeds: [embed] });
-  } catch (err) { console.error("[ERRO LOG MOD]", err.message); }
-}
-
-async function enviarLogTicket(guild, embed, files = []) {
-  try {
-    const canal = await guild.channels.fetch(CANAL_LOGS_TICKET_ID).catch(() => null);
-    if (canal) await canal.send({ embeds: [embed], files });
-  } catch (err) { console.error("[ERRO LOG TICKET]", err.message); }
-}
-
-// ============================================================
-// FUNÇÃO PARA ENVIAR DM DE PUNIÇÃO (STAFF)
-// ============================================================
-async function enviarDMPunicao(user, staffTag, acao, motivo) {
-  try {
-    const embed = new EmbedBuilder()
-      .setTitle(`🔨 Você foi ${acao}`)
-      .setColor("Red")
-      .setDescription(
-        `Verificamos que você descumpriu uma ou mais regras do servidor.\n\n` +
-        `**Nota do staff:** ${motivo || "Não informado"}`
-      )
-      .setFooter({ text: `Staff responsável: ${staffTag}` })
-      .setTimestamp();
-
-    await user.send({ embeds: [embed] });
-    console.log(`[DM] Punição enviada para ${user.tag}`);
-  } catch (err) {
-    console.log(`[DM] Não foi possível enviar DM para ${user.tag}: ${err.message}`);
-  }
-}
-
-// ============================================================
-// PAINEL DE TICKET
-// ============================================================
-async function enviarPainelTicket(guild) {
-  try {
-    const canal = await guild.channels.fetch(CANAL_TICKET_PAINEL).catch(() => null);
-    if (!canal) return;
-
-    const msgs    = await canal.messages.fetch({ limit: 20 }).catch(() => []);
-    const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
-    for (const [, msg] of botMsgs) { try { await msg.delete(); } catch {} }
-
-    const embed = new EmbedBuilder()
-      .setTitle("Suporte do Zé")
-      .setDescription("Clique abaixo para abrir seu ticket!")
-      .setColor("Yellow")
-      .setImage("https://i.imgur.com/6sSikdc.png")
-      .setFooter({ text: "Suporte Do Zé" });
-
-    const select = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("ticket_categoria")
-        .setPlaceholder("Escolha uma opção para sua Dúvida.")
-        .addOptions(
-          new StringSelectMenuOptionBuilder().setLabel("📜 Dúvida Script").setDescription("Dúvidas sobre scripts").setValue("duvida_script").setEmoji("📜"),
-          new StringSelectMenuOptionBuilder().setLabel("⚙️ Dúvida Executor").setDescription("Dúvidas sobre executores").setValue("duvida_executor").setEmoji("⚙️"),
-          new StringSelectMenuOptionBuilder().setLabel("💬 Outros").setDescription("Outros assuntos").setValue("outros").setEmoji("💬"),
-        )
-    );
-
-    await canal.send({ embeds: [embed], components: [select] });
-    console.log("[TICKET] Painel enviado!");
-  } catch (err) { console.error("[ERRO PAINEL TICKET]", err.message); }
-}
-
-// ============================================================
-// PAINEL DE AVALIAÇÃO STAFF
-// ============================================================
-async function enviarPainelAvaliacao(guild) {
-  try {
-    const canal = await guild.channels.fetch(CANAL_AVALIACOES_ID).catch(() => null);
-    if (!canal) return;
-
-    const msgs    = await canal.messages.fetch({ limit: 20 }).catch(() => []);
-    const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
-    for (const [, msg] of botMsgs) { try { await msg.delete(); } catch {} }
-
-    const embed = new EmbedBuilder()
-      .setTitle("Central de Avaliações Staff")
-      .setDescription(`Sua opinião é muito importante para nós! Clique no botão abaixo para avaliar um membro da staff.\n\n🌟 **Você ganha 200 ZéCoins por cada avaliação!** (a cada 24h)`)
-      .setColor("Blue")
-      .setImage("https://i.imgur.com/WxAC08v.png")
-      .setFooter({ text: "Avalie nossa equipe e ganhe recompensas!" });
-
-    const button = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("abrir_modal_avaliacao")
-        .setLabel("💡 Enviar Avaliação")
-        .setStyle(ButtonStyle.Primary)
-        .setEmoji("💡"),
-    );
-
-    await canal.send({ embeds: [embed], components: [button] });
-    console.log("[AVALIACAO] Painel de avaliação enviado!");
-  } catch (err) { console.error("[ERRO PAINEL AVALIACAO]", err.message); }
-}
-
-// ============================================================
-// AVALIAÇÃO VIA DM
-// ============================================================
-async function enviarAvaliacaoDM(user, staffTag, categoria, guild) {
-  try {
-    const embed = new EmbedBuilder()
-      .setTitle("⭐ Avalie o atendimento!")
-      .setColor("Gold")
-      .setDescription(`Seu ticket foi fechado.\n\n**Staff que te atendeu:** ${staffTag}\n**Categoria:** ${categoria}\n\nComo você avalia o atendimento?`)
-      .setFooter({ text: "Clique em uma estrela para avaliar" });
-
-    const botoes = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("avaliacao_ticket_1").setLabel("⭐").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("avaliacao_ticket_2").setLabel("⭐⭐").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("avaliacao_ticket_3").setLabel("⭐⭐⭐").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("avaliacao_ticket_4").setLabel("⭐⭐⭐⭐").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("avaliacao_ticket_5").setLabel("⭐⭐⭐⭐⭐").setStyle(ButtonStyle.Success),
-    );
-
-    await user.send({ embeds: [embed], components: [botoes] });
-    avaliacoesPendentes[user.id] = { staffTag, categoria, guildId: guild.id };
-  } catch (err) { console.error("[ERRO DM AVALIAÇÃO]", err.message); }
-}
-
-// ============================================================
-// FUNÇÕES DE GIVEAWAY
-// ============================================================
-async function atualizarGiveaway(messageId) {
-  const giveaway = giveaways[messageId];
-  if (!giveaway || giveaway.ended) return;
-
-  const agora = Date.now();
-  const tempoRestante = giveaway.endTime - agora;
-
-  if (tempoRestante <= 0) {
-    // Finalizar giveaway
-    await finalizarGiveaway(messageId);
-    return;
-  }
-
-  // Atualizar embed com contagem regressiva
-  const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
-  if (!canal) return;
-  const msg = await canal.messages.fetch(messageId).catch(() => null);
-  if (!msg) return;
-
-  const embed = new EmbedBuilder()
-    .setTitle(`🎉 GIVEAWAY: ${giveaway.prize}`)
-    .setColor("Gold")
-    .setDescription(`Clique no botão **Participar** para concorrer!\n\n**Tempo restante:** ${formatarTempo(tempoRestante)}\n**Vencedores:** ${giveaway.winners}\n**Participantes:** ${giveaway.entered.length}`)
-    .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"} • ID: ${messageId}` })
-    .setTimestamp();
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`giveaway_join_${messageId}`)
-      .setLabel("🎁 Participar")
-      .setStyle(ButtonStyle.Primary)
-  );
-
-  await msg.edit({ embeds: [embed], components: [row] });
-}
-
-async function finalizarGiveaway(messageId) {
-  const giveaway = giveaways[messageId];
-  if (!giveaway || giveaway.ended) return;
-
-  giveaway.ended = true;
-
-  const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
-  if (!canal) return;
-  const msg = await canal.messages.fetch(messageId).catch(() => null);
-  if (!msg) return;
-
-  // Sortear vencedores
-  const participantes = giveaway.entered;
-  let vencedores = [];
-  const numeroVencedores = Math.min(giveaway.winners, participantes.length);
-
-  if (participantes.length === 0) {
-    // Ninguém participou
-    const embed = new EmbedBuilder()
-      .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
-      .setColor("Red")
-      .setDescription(`😢 Ninguém participou deste giveaway!`)
-      .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"}` })
-      .setTimestamp();
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`giveaway_ended_${messageId}`)
-        .setLabel("❌ Encerrado")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(true)
-    );
-
-    await msg.edit({ embeds: [embed], components: [row] });
-    delete giveaways[messageId];
-    return;
-  }
-
-  // Selecionar vencedores aleatoriamente
-  const shuffled = [...participantes];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  vencedores = shuffled.slice(0, numeroVencedores);
-
-  giveaway.winnerIds = vencedores;
-
-  // Mencionar vencedores
-  const mencoes = vencedores.map(id => `<@${id}>`).join(", ");
-
-  const embed = new EmbedBuilder()
-    .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
-    .setColor("Green")
-    .setDescription(`**Vencedor(es):** ${mencoes}\n\nParabéns aos ganhadores!`)
-    .addFields(
-      { name: "Total de participantes", value: `${participantes.length}`, inline: true },
-      { name: "Número de vencedores", value: `${vencedores.length}`, inline: true }
-    )
-    .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"}` })
-    .setTimestamp();
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`giveaway_ended_${messageId}`)
-      .setLabel("✅ Encerrado")
-      .setStyle(ButtonStyle.Success)
-      .setDisabled(true)
-  );
-
-  await msg.edit({ embeds: [embed], components: [row] });
-
-  // Log
-  const logEmbed = new EmbedBuilder()
-    .setTitle("🎁 Giveaway Finalizado")
-    .setColor("Green")
-    .addFields(
-      { name: "Prêmio", value: giveaway.prize },
-      { name: "Vencedores", value: mencoes || "Nenhum" },
-      { name: "Participantes", value: `${participantes.length}` }
-    )
-    .setTimestamp();
-  await enviarLogMod(canal.guild, logEmbed);
-
-  // Remover da lista de ativos
-  delete giveaways[messageId];
-}
-
-// ============================================================
 // BOT PRONTO
 // ============================================================
 client.once("ready", async () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
 
+  // Registrar comandos
   const commands = [
-    new SlashCommandBuilder()
-      .setName("say").setDescription("Faz o bot enviar uma mensagem")
-      .addStringOption((opt) => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true))
-      .addChannelOption((opt) => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
-
-    new SlashCommandBuilder()
-      .setName("avatar").setDescription("Mostra a foto de perfil de alguém")
-      .addUserOption((opt) => opt.setName("usuario").setDescription("De quem ver o avatar").setRequired(false)),
-
-    new SlashCommandBuilder()
-      .setName("video").setDescription("Anuncia um vídeo novo do YouTube")
-      .addStringOption((opt) => opt.setName("link").setDescription("Link do vídeo").setRequired(true))
-      .addChannelOption((opt) => opt.setName("canal").setDescription("Canal onde anunciar").setRequired(true))
-      .addStringOption((opt) => opt.setName("titulo").setDescription("Título personalizado").setRequired(false))
-      .addStringOption((opt) => opt.setName("imagem").setDescription("Link de imagem").setRequired(false)),
-
+    // Todos os comandos existentes (mantidos)
+    new SlashCommandBuilder().setName("say").setDescription("Faz o bot enviar uma mensagem").addStringOption((opt) => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true)).addChannelOption((opt) => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
+    new SlashCommandBuilder().setName("avatar").setDescription("Mostra a foto de perfil de alguém").addUserOption((opt) => opt.setName("usuario").setDescription("De quem ver o avatar").setRequired(false)),
+    new SlashCommandBuilder().setName("video").setDescription("Anuncia um vídeo novo do YouTube").addStringOption((opt) => opt.setName("link").setDescription("Link do vídeo").setRequired(true)).addChannelOption((opt) => opt.setName("canal").setDescription("Canal onde anunciar").setRequired(true)).addStringOption((opt) => opt.setName("titulo").setDescription("Título personalizado").setRequired(false)).addStringOption((opt) => opt.setName("imagem").setDescription("Link de imagem").setRequired(false)),
     new SlashCommandBuilder().setName("diario").setDescription("Resgata sua recompensa diária de ZéCoins"),
     new SlashCommandBuilder().setName("trabalhar").setDescription("Trabalhe para ganhar ZéCoins (a cada 1 hora)"),
-
-    new SlashCommandBuilder()
-      .setName("carteira").setDescription("Veja seu saldo de ZéCoins")
-      .addUserOption((opt) => opt.setName("usuario").setDescription("Ver saldo de outra pessoa").setRequired(false)),
-
+    new SlashCommandBuilder().setName("carteira").setDescription("Veja seu saldo de ZéCoins").addUserOption((opt) => opt.setName("usuario").setDescription("Ver saldo de outra pessoa").setRequired(false)),
     new SlashCommandBuilder().setName("loja").setDescription("Veja os itens disponíveis na loja"),
-
-    new SlashCommandBuilder()
-      .setName("comprar").setDescription("Compra um item da loja")
-      .addStringOption((opt) => opt.setName("item").setDescription("ID do item").setRequired(true)),
-
+    new SlashCommandBuilder().setName("comprar").setDescription("Compra um item da loja").addStringOption((opt) => opt.setName("item").setDescription("ID do item").setRequired(true)),
     new SlashCommandBuilder().setName("inventario").setDescription("Veja seus itens comprados"),
-
-    new SlashCommandBuilder()
-      .setName("usar").setDescription("Usa um item do seu inventário")
-      .addStringOption((opt) => opt.setName("item").setDescription("ID do item").setRequired(true))
-      .addUserOption((opt) => opt.setName("usuario").setDescription("Alvo").setRequired(false))
-      .addStringOption((opt) => opt.setName("novo-apelido").setDescription("Novo apelido").setRequired(false)),
-
+    new SlashCommandBuilder().setName("usar").setDescription("Usa um item do seu inventário").addStringOption((opt) => opt.setName("item").setDescription("ID do item").setRequired(true)).addUserOption((opt) => opt.setName("usuario").setDescription("Alvo").setRequired(false)).addStringOption((opt) => opt.setName("novo-apelido").setDescription("Novo apelido").setRequired(false)),
     new SlashCommandBuilder().setName("rank").setDescription("Ranking dos membros mais ricos"),
-
-    new SlashCommandBuilder()
-      .setName("transferir").setDescription("Transfere ZéCoins para outro membro")
-      .addUserOption((opt) => opt.setName("usuario").setDescription("Quem vai receber").setRequired(true))
-      .addIntegerOption((opt) => opt.setName("valor").setDescription("Quantas ZéCoins transferir").setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName("dar-moedas").setDescription("[STAFF] Dá ZéCoins para alguém")
-      .addUserOption((opt) => opt.setName("usuario").setDescription("Quem vai receber").setRequired(true))
-      .addIntegerOption((opt) => opt.setName("quantidade").setDescription("Quantas moedas dar").setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName("apostar").setDescription("Desafia alguém para uma aposta de ZéCoins")
-      .addUserOption((opt) => opt.setName("usuario").setDescription("Quem desafiar").setRequired(true))
-      .addIntegerOption((opt) => opt.setName("valor").setDescription("Quantas ZéCoins apostar").setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName("avaliar").setDescription("Avalie um membro do staff pelo atendimento no chat")
-      .addUserOption((opt) => opt.setName("staff").setDescription("Qual staff você quer avaliar").setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName("ofuscar").setDescription("Ofusca um script Luau para proteger seu código")
-      .addStringOption((opt) => opt.setName("codigo").setDescription("Cole o código Luau aqui").setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName("ficha").setDescription("Informações sobre as Fichas de Serviço Roblox"),
-
-    new SlashCommandBuilder()
-      .setName("retirar-ficha").setDescription("[STAFF] Retira ficha de serviço Roblox do inventário de alguém")
-      .addUserOption((opt) => opt.setName("usuario").setDescription("De quem retirar").setRequired(true))
-      .addIntegerOption((opt) => opt.setName("quantidade").setDescription("Quantas fichas (padrão: 1)").setRequired(false)),
-
-    new SlashCommandBuilder()
-      .setName("lockdown").setDescription("[STAFF] Bloqueia todos os canais do servidor")
-      .addStringOption((opt) => opt.setName("motivo").setDescription("Motivo do lockdown").setRequired(false)),
-
+    new SlashCommandBuilder().setName("transferir").setDescription("Transfere ZéCoins para outro membro").addUserOption((opt) => opt.setName("usuario").setDescription("Quem vai receber").setRequired(true)).addIntegerOption((opt) => opt.setName("valor").setDescription("Quantas ZéCoins transferir").setRequired(true)),
+    new SlashCommandBuilder().setName("dar-moedas").setDescription("[STAFF] Dá ZéCoins para alguém").addUserOption((opt) => opt.setName("usuario").setDescription("Quem vai receber").setRequired(true)).addIntegerOption((opt) => opt.setName("quantidade").setDescription("Quantas moedas dar").setRequired(true)),
+    new SlashCommandBuilder().setName("apostar").setDescription("Desafia alguém para uma aposta de ZéCoins").addUserOption((opt) => opt.setName("usuario").setDescription("Quem desafiar").setRequired(true)).addIntegerOption((opt) => opt.setName("valor").setDescription("Quantas ZéCoins apostar").setRequired(true)),
+    new SlashCommandBuilder().setName("avaliar").setDescription("Avalie um membro do staff pelo atendimento no chat").addUserOption((opt) => opt.setName("staff").setDescription("Qual staff você quer avaliar").setRequired(true)),
+    new SlashCommandBuilder().setName("ofuscar").setDescription("Ofusca um script Luau para proteger seu código").addStringOption((opt) => opt.setName("codigo").setDescription("Cole o código Luau aqui").setRequired(true)),
+    new SlashCommandBuilder().setName("ficha").setDescription("Informações sobre as Fichas de Serviço Roblox"),
+    new SlashCommandBuilder().setName("retirar-ficha").setDescription("[STAFF] Retira ficha de serviço Roblox do inventário de alguém").addUserOption((opt) => opt.setName("usuario").setDescription("De quem retirar").setRequired(true)).addIntegerOption((opt) => opt.setName("quantidade").setDescription("Quantas fichas (padrão: 1)").setRequired(false)),
+    new SlashCommandBuilder().setName("lockdown").setDescription("[STAFF] Bloqueia todos os canais do servidor").addStringOption((opt) => opt.setName("motivo").setDescription("Motivo do lockdown").setRequired(false)),
     new SlashCommandBuilder().setName("unlockdown").setDescription("[STAFF] Desbloqueia todos os canais do servidor"),
-
     new SlashCommandBuilder().setName("esconder-canal").setDescription("[STAFF] Esconde o canal atual"),
     new SlashCommandBuilder().setName("mostrar-canal").setDescription("[STAFF] Mostra o canal atual"),
-
-    new SlashCommandBuilder()
-      .setName("lock").setDescription("[STAFF] Bloqueia o canal atual")
-      .addStringOption((opt) => opt.setName("motivo").setDescription("Motivo do bloqueio").setRequired(false)),
-
+    new SlashCommandBuilder().setName("lock").setDescription("[STAFF] Bloqueia o canal atual").addStringOption((opt) => opt.setName("motivo").setDescription("Motivo do bloqueio").setRequired(false)),
     new SlashCommandBuilder().setName("unlock").setDescription("[STAFF] Desbloqueia o canal atual"),
-
-    new SlashCommandBuilder()
-      .setName("slowmode").setDescription("[STAFF] Define o modo lento do canal")
-      .addIntegerOption((opt) => opt.setName("segundos").setDescription("Segundos (0 para desativar)").setRequired(true)),
-
+    new SlashCommandBuilder().setName("slowmode").setDescription("[STAFF] Define o modo lento do canal").addIntegerOption((opt) => opt.setName("segundos").setDescription("Segundos (0 para desativar)").setRequired(true)),
     new SlashCommandBuilder().setName("painel-ticket").setDescription("[STAFF] Envia o painel de tickets no canal configurado"),
     new SlashCommandBuilder().setName("painel-avaliacao").setDescription("[STAFF] Envia o painel de avaliação de staff no canal configurado"),
-
     new SlashCommandBuilder().setName("fechar-ticket").setDescription("Fecha o ticket atual"),
-
-    new SlashCommandBuilder()
-      .setName("staff-ver-moedas").setDescription("[STAFF] Mostra todos os membros com ZéCoins no servidor"),
-
-    // Comandos de moderação
-    new SlashCommandBuilder()
-      .setName("kick").setDescription("[STAFF] Expulsa um membro do servidor")
-      .addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser expulso").setRequired(true))
-      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo da expulsão").setRequired(false)),
-
-    new SlashCommandBuilder()
-      .setName("ban").setDescription("[STAFF] Bane um membro do servidor")
-      .addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser banido").setRequired(true))
-      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo do banimento").setRequired(false)),
-
-    new SlashCommandBuilder()
-      .setName("mute").setDescription("[STAFF] Muta um membro por um período")
-      .addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser mutado").setRequired(true))
-      .addIntegerOption(opt => opt.setName("duracao").setDescription("Duração em minutos").setRequired(true))
-      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo do mute").setRequired(false)),
-
-    new SlashCommandBuilder()
-      .setName("addmoedas")
-      .setDescription("[STAFF] Adiciona ZéCoins a vários usuários de uma vez")
-      .addStringOption(opt => 
-        opt.setName("usuarios")
-          .setDescription("Menções ou IDs separados por espaço (ex: @user1 @user2 123456789)")
-          .setRequired(true)
-      )
-      .addIntegerOption(opt =>
-        opt.setName("quantidade")
-          .setDescription("Quantidade a adicionar a cada usuário")
-          .setRequired(true)
-          .setMinValue(1)
-      ),
-
-    new SlashCommandBuilder()
-      .setName("formulario")
-      .setDescription("[STAFF] Gerencia o formulário de recrutamento")
-      .addSubcommand(sub => 
-        sub.setName("ativar")
-          .setDescription("Ativa o formulário de staff em um canal específico (ou no atual)")
-          .addChannelOption(opt =>
-            opt.setName("canal")
-              .setDescription("Canal onde enviar o formulário (opcional)")
-              .setRequired(false)
-              .addChannelTypes(ChannelType.GuildText)
-          )
-      ),
-
-    new SlashCommandBuilder()
-      .setName("deletar-canal")
-      .setDescription("[STAFF] Deleta um canal do servidor (texto ou voz)")
-      .addChannelOption(opt =>
-        opt.setName("canal")
-          .setDescription("Canal a ser deletado (se omitido, usa o canal atual)")
-          .setRequired(false)
-      )
-      .addStringOption(opt =>
-        opt.setName("motivo")
-          .setDescription("Motivo da deleção (opcional)")
-          .setRequired(false)
-      ),
-
-    // ============================================================
-    // 🆕 COMANDOS DE GIVEAWAY
-    // ============================================================
+    new SlashCommandBuilder().setName("staff-ver-moedas").setDescription("[STAFF] Mostra todos os membros com ZéCoins no servidor"),
+    new SlashCommandBuilder().setName("kick").setDescription("[STAFF] Expulsa um membro do servidor").addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser expulso").setRequired(true)).addStringOption(opt => opt.setName("motivo").setDescription("Motivo da expulsão").setRequired(false)),
+    new SlashCommandBuilder().setName("ban").setDescription("[STAFF] Bane um membro do servidor").addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser banido").setRequired(true)).addStringOption(opt => opt.setName("motivo").setDescription("Motivo do banimento").setRequired(false)),
+    new SlashCommandBuilder().setName("mute").setDescription("[STAFF] Muta um membro por um período").addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser mutado").setRequired(true)).addIntegerOption(opt => opt.setName("duracao").setDescription("Duração em minutos").setRequired(true)).addStringOption(opt => opt.setName("motivo").setDescription("Motivo do mute").setRequired(false)),
+    new SlashCommandBuilder().setName("addmoedas").setDescription("[STAFF] Adiciona ZéCoins a vários usuários de uma vez").addStringOption(opt => opt.setName("usuarios").setDescription("Menções ou IDs separados por espaço (ex: @user1 @user2 123456789)").setRequired(true)).addIntegerOption(opt => opt.setName("quantidade").setDescription("Quantidade a adicionar a cada usuário").setRequired(true).setMinValue(1)),
+    new SlashCommandBuilder().setName("formulario").setDescription("[STAFF] Gerencia o formulário de recrutamento").addSubcommand(sub => sub.setName("ativar").setDescription("Ativa o formulário de staff em um canal específico (ou no atual)").addChannelOption(opt => opt.setName("canal").setDescription("Canal onde enviar o formulário (opcional)").setRequired(false).addChannelTypes(ChannelType.GuildText))),
+    new SlashCommandBuilder().setName("deletar-canal").setDescription("[STAFF] Deleta um canal do servidor (texto ou voz)").addChannelOption(opt => opt.setName("canal").setDescription("Canal a ser deletado (se omitido, usa o canal atual)").setRequired(false)).addStringOption(opt => opt.setName("motivo").setDescription("Motivo da deleção (opcional)").setRequired(false)),
+    // Comandos de Giveaway
     new SlashCommandBuilder()
       .setName("giveaway")
       .setDescription("Sistema de giveaways")
-      .addSubcommand(sub =>
-        sub.setName("criar")
-          .setDescription("Cria um novo giveaway")
-          .addChannelOption(opt =>
-            opt.setName("canal")
-              .setDescription("Canal onde o giveaway será anunciado")
-              .setRequired(true)
-              .addChannelTypes(ChannelType.GuildText)
-          )
-          .addStringOption(opt =>
-            opt.setName("premio")
-              .setDescription("Prêmio do giveaway (ex: 10 ZéCoins)")
-              .setRequired(true)
-          )
-          .addStringOption(opt =>
-            opt.setName("duracao")
-              .setDescription("Duração (ex: 1h, 30m, 1d, 2d4h)")
-              .setRequired(true)
-          )
-          .addIntegerOption(opt =>
-            opt.setName("vencedores")
-              .setDescription("Número de vencedores (padrão: 1)")
-              .setRequired(false)
-              .setMinValue(1)
-              .setMaxValue(25)
-          )
-          .addRoleOption(opt =>
-            opt.setName("cargo_obrigatorio")
-              .setDescription("Cargo obrigatório para participar (opcional)")
-              .setRequired(false)
-          )
-      )
-      .addSubcommand(sub =>
-        sub.setName("reroll")
-          .setDescription("Sorteia novamente os vencedores de um giveaway encerrado")
-          .addStringOption(opt =>
-            opt.setName("mensagem_id")
-              .setDescription("ID da mensagem do giveaway")
-              .setRequired(true)
-          )
-      )
-      .addSubcommand(sub =>
-        sub.setName("listar")
-          .setDescription("Lista todos os giveaways ativos no servidor")
-      )
-      .addSubcommand(sub =>
-        sub.setName("encerrar")
-          .setDescription("Encerra um giveaway ativo manualmente")
-          .addStringOption(opt =>
-            opt.setName("mensagem_id")
-              .setDescription("ID da mensagem do giveaway")
-              .setRequired(true)
-          )
-      ),
+      .addSubcommand(sub => sub.setName("criar").setDescription("Cria um novo giveaway").addChannelOption(opt => opt.setName("canal").setDescription("Canal onde o giveaway será anunciado").setRequired(true).addChannelTypes(ChannelType.GuildText)).addStringOption(opt => opt.setName("premio").setDescription("Prêmio do giveaway (ex: 10 ZéCoins)").setRequired(true)).addStringOption(opt => opt.setName("duracao").setDescription("Duração (ex: 1h, 30m, 1d, 2d4h)").setRequired(true)).addIntegerOption(opt => opt.setName("vencedores").setDescription("Número de vencedores (padrão: 1)").setRequired(false).setMinValue(1).setMaxValue(25)).addRoleOption(opt => opt.setName("cargo_obrigatorio").setDescription("Cargo obrigatório para participar (opcional)").setRequired(false)))
+      .addSubcommand(sub => sub.setName("reroll").setDescription("Sorteia novamente os vencedores de um giveaway encerrado").addStringOption(opt => opt.setName("mensagem_id").setDescription("ID da mensagem do giveaway").setRequired(true)))
+      .addSubcommand(sub => sub.setName("listar").setDescription("Lista todos os giveaways ativos no servidor"))
+      .addSubcommand(sub => sub.setName("encerrar").setDescription("Encerra um giveaway ativo manualmente").addStringOption(opt => opt.setName("mensagem_id").setDescription("ID da mensagem do giveaway").setRequired(true))),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
-
   try {
     console.log("Started refreshing application (/) commands.");
     await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
@@ -679,23 +518,23 @@ client.once("ready", async () => {
       }
     }
   }, 15000);
+
+  console.log(`📌 Sistema de giveaways ativos: ${Object.keys(giveaways).filter(id => !giveaways[id].ended).length}`);
 });
 
 // ============================================================
-// MENSAGENS (ANTI-SPAM, PALAVRAS PROIBIDAS, COMANDOS .st, ETC.)
+// EVENTO DE MENSAGENS (Anti-spam, sticky, etc.)
 // ============================================================
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  // ---- STICKY MESSAGE ----
+  // Sticky messages
   if (message.content.startsWith(".st")) {
     if (!temCargoMod(message.member)) {
       return message.reply("❌ Você não tem permissão para usar este comando.");
     }
-
     const args = message.content.slice(3).trim();
     const channelId = message.channel.id;
-
     if (!args) {
       if (stickyMessages[channelId]) {
         const old = stickyMessages[channelId];
@@ -710,34 +549,28 @@ client.on("messageCreate", async (message) => {
       }
       return;
     }
-
     const content = args;
     await message.delete().catch(() => {});
-
     const sent = await message.channel.send(content);
     stickyMessages[channelId] = { content, messageId: sent.id };
-
     const dmEmbed = new EmbedBuilder()
       .setTitle("📌 Sticky ativado!")
       .setColor("Green")
       .setDescription(`Sticky definida no canal <#${channelId}>:\n\n${content}`)
       .setTimestamp();
     await message.author.send({ embeds: [dmEmbed] }).catch(() => {});
-
     return;
   }
 
-  // ---- LÓGICA PARA MANTER STICKY SEMPRE EM BAIXO ----
+  // Manter sticky sempre em baixo
   const sticky = stickyMessages[message.channel.id];
   if (sticky) {
     if (message.author.id === client.user.id && message.id === sticky.messageId) {
       return;
     }
-
     try {
       const oldMsg = await message.channel.messages.fetch(sticky.messageId).catch(() => null);
       if (oldMsg) await oldMsg.delete().catch(() => {});
-
       const newMsg = await message.channel.send(sticky.content);
       sticky.messageId = newMsg.id;
     } catch (err) {
@@ -745,7 +578,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ---- FLOOD ----
+  // Flood
   if (!client.floodUsers) client.floodUsers = {};
   const user = client.floodUsers[message.author.id] || { count: 0, timer: null };
   user.count++;
@@ -754,7 +587,6 @@ client.on("messageCreate", async (message) => {
     delete client.floodUsers[message.author.id];
   }, 5000);
   client.floodUsers[message.author.id] = user;
-
   if (user.count > 5) {
     try { await message.delete(); } catch {}
     try {
@@ -768,7 +600,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // ---- @everyone/@here ----
+  // @everyone/@here
   if (message.content.includes("@everyone") || message.content.includes("@here")) {
     if (!message.member.roles.cache.has(CARGO_SUPORTE_ID)) {
       try { await message.delete(); } catch {}
@@ -778,7 +610,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ---- MASS MENTION ----
+  // Mass mention
   if (message.mentions.users.size > 5 || message.mentions.roles.size > 3) {
     if (!temCargoMod(message.member)) {
       try { await message.delete(); } catch {}
@@ -788,7 +620,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ---- PALAVRAS PROIBIDAS ----
+  // Palavras proibidas
   const isStaff = message.member.roles.cache.some((r) => CARGOS_ISENTOS.includes(r.id));
   if (!isStaff && contemPalavraGrave(message.content)) {
     try { await message.delete(); } catch {}
@@ -815,7 +647,6 @@ client.on("messageCreate", async (message) => {
 // INTERACTIONS (BOTÕES, MODAIS, SELECT MENUS, COMANDOS)
 // ============================================================
 client.on("interactionCreate", async (interaction) => {
-
   // ---- BOTÕES ----
   if (interaction.isButton()) {
     // Botão "Dúvidas" do formulário
@@ -831,12 +662,7 @@ client.on("interactionCreate", async (interaction) => {
             new StringSelectMenuOptionBuilder().setLabel("💬 Outros").setDescription("Outros assuntos").setValue("outros").setEmoji("💬")
           )
       );
-
-      await interaction.reply({
-        content: "Escolha o motivo para abrir seu ticket:",
-        components: [select],
-        flags: 64 // ephemeral
-      });
+      await interaction.reply({ content: "Escolha o motivo para abrir seu ticket:", components: [select], flags: 64 });
       return;
     }
 
@@ -846,50 +672,26 @@ client.on("interactionCreate", async (interaction) => {
       const ultima = ultimaAvaliacao[interaction.user.id] || 0;
       if (agora - ultima < COOLDOWN_AVALIACAO) {
         const tempoRestante = COOLDOWN_AVALIACAO - (agora - ultima);
-        return interaction.reply({
-          content: `⏳ Você já avaliou recentemente! Aguarde **${formatarTempo(tempoRestante)}** para avaliar novamente e ganhar mais ZéCoins.`,
-          flags: 64
-        });
+        return interaction.reply({ content: `⏳ Você já avaliou recentemente! Aguarde **${formatarTempo(tempoRestante)}** para avaliar novamente e ganhar mais ZéCoins.`, flags: 64 });
       }
-
       const modal = new ModalBuilder()
         .setCustomId("modal_avaliacao_staff")
         .setTitle("Avaliação de Staff");
-
-      const staffNameInput = new TextInputBuilder()
-        .setCustomId("staff_name_input")
-        .setLabel("Nome do Staff")
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder("Ex: Fulano#1234 ou ID do usuário")
-        .setRequired(true);
-
-      const commentInput = new TextInputBuilder()
-        .setCustomId("comment_input")
-        .setLabel("Seu Comentário")
-        .setStyle(TextInputStyle.Paragraph)
-        .setPlaceholder("Descreva sua experiência com o staff...")
-        .setRequired(true);
-
-      const ratingInput = new TextInputBuilder()
-        .setCustomId("rating_input")
-        .setLabel("Nota (de 1 a 5)")
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder("Ex: 5")
-        .setRequired(true);
-
-      const firstActionRow = new ActionRowBuilder().addComponents(staffNameInput);
-      const secondActionRow = new ActionRowBuilder().addComponents(commentInput);
-      const thirdActionRow = new ActionRowBuilder().addComponents(ratingInput);
-
-      modal.addComponents(firstActionRow, secondActionRow, thirdActionRow);
-
+      const staffNameInput = new TextInputBuilder().setCustomId("staff_name_input").setLabel("Nome do Staff").setStyle(TextInputStyle.Short).setPlaceholder("Ex: Fulano#1234 ou ID do usuário").setRequired(true);
+      const commentInput = new TextInputBuilder().setCustomId("comment_input").setLabel("Seu Comentário").setStyle(TextInputStyle.Paragraph).setPlaceholder("Descreva sua experiência com o staff...").setRequired(true);
+      const ratingInput = new TextInputBuilder().setCustomId("rating_input").setLabel("Nota (de 1 a 5)").setStyle(TextInputStyle.Short).setPlaceholder("Ex: 5").setRequired(true);
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(staffNameInput),
+        new ActionRowBuilder().addComponents(commentInput),
+        new ActionRowBuilder().addComponents(ratingInput)
+      );
       await interaction.showModal(modal);
       return;
     }
 
     // Avaliação de ticket
     if (interaction.customId.startsWith("avaliacao_ticket_")) {
-      const nota     = parseInt(interaction.customId.split("_")[2]);
+      const nota = parseInt(interaction.customId.split("_")[2]);
       const estrelas = "⭐".repeat(nota);
       const pendente = avaliacoesPendentes[interaction.user.id];
       if (!pendente) return interaction.update({ content: "❌ Avaliação expirada ou já respondida.", embeds: [], components: [] });
@@ -900,7 +702,6 @@ client.on("interactionCreate", async (interaction) => {
           .addFields({ name: "👤 Usuário", value: `${interaction.user.tag}` }, { name: "🛠️ Staff", value: pendente.staffTag }, { name: "📂 Categoria", value: pendente.categoria }, { name: "⭐ Avaliação", value: `${estrelas} (${nota}/5)` })
           .setTimestamp());
       }
-
       const agora = Date.now();
       const ultima = ultimaAvaliacao[interaction.user.id] || 0;
       let ganhouCoins = false;
@@ -908,9 +709,9 @@ client.on("interactionCreate", async (interaction) => {
         const perfil = getPerfil(interaction.user.id);
         perfil.saldo += 200;
         ultimaAvaliacao[interaction.user.id] = agora;
+        saveData(DATA_FILES.ultimaAvaliacao, ultimaAvaliacao);
         ganhouCoins = true;
       }
-
       delete avaliacoesPendentes[interaction.user.id];
       const mensagem = ganhouCoins
         ? `✅ Obrigado pela avaliação! Você deu **${estrelas} (${nota}/5)** para o atendimento e ganhou **200 ZéCoins**!`
@@ -920,12 +721,12 @@ client.on("interactionCreate", async (interaction) => {
 
     // Avaliação de chat
     if (interaction.customId.startsWith("avaliacao_chat_")) {
-      const partes   = interaction.customId.split("_");
-      const nota     = parseInt(partes[2]);
-      const staffId  = partes[3];
+      const partes = interaction.customId.split("_");
+      const nota = parseInt(partes[2]);
+      const staffId = partes[3];
       const estrelas = "⭐".repeat(nota);
-      const guild    = interaction.guild || await client.guilds.fetch(interaction.guildId).catch(() => null);
-      const canalAv  = await guild?.channels.fetch(CANAL_AVALIACOES_ID).catch(() => null);
+      const guild = interaction.guild || await client.guilds.fetch(interaction.guildId).catch(() => null);
+      const canalAv = await guild?.channels.fetch(CANAL_AVALIACOES_ID).catch(() => null);
       const staffUser = await client.users.fetch(staffId).catch(() => null);
       if (canalAv) {
         await canalAv.send({ embeds: [new EmbedBuilder()
@@ -933,7 +734,6 @@ client.on("interactionCreate", async (interaction) => {
           .addFields({ name: "👤 Avaliado por", value: `${interaction.user.tag}` }, { name: "🛠️ Staff", value: staffUser ? `${staffUser.tag}` : `ID: ${staffId}` }, { name: "⭐ Nota", value: `${estrelas} (${nota}/5)` })
           .setTimestamp()] });
       }
-
       const agora = Date.now();
       const ultima = ultimaAvaliacao[interaction.user.id] || 0;
       let ganhouCoins = false;
@@ -941,9 +741,9 @@ client.on("interactionCreate", async (interaction) => {
         const perfil = getPerfil(interaction.user.id);
         perfil.saldo += 200;
         ultimaAvaliacao[interaction.user.id] = agora;
+        saveData(DATA_FILES.ultimaAvaliacao, ultimaAvaliacao);
         ganhouCoins = true;
       }
-
       const mensagem = ganhouCoins
         ? `✅ Avaliação enviada! Você deu **${estrelas} (${nota}/5)** e ganhou **200 ZéCoins**!`
         : `✅ Avaliação enviada! Você deu **${estrelas} (${nota}/5)**. (Recompensa não concedida pois você já avaliou nas últimas 24h.)`;
@@ -956,7 +756,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!ticket) return interaction.reply({ content: "❌ Ticket não encontrado!", flags: 64 });
       if (ticket.staffId) return interaction.reply({ content: `❌ Este ticket já foi reivindicado por <@${ticket.staffId}>!`, flags: 64 });
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode reivindicar tickets!", flags: 64 });
-      ticket.staffId  = interaction.user.id;
+      ticket.staffId = interaction.user.id;
       ticket.staffTag = interaction.user.tag;
       const embedAtualizado = new EmbedBuilder()
         .setTitle(`🎫 Ticket — ${ticket.categoria}`).setColor("Green")
@@ -981,7 +781,7 @@ client.on("interactionCreate", async (interaction) => {
       const ticket = tickets[interaction.channel.id];
       if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", flags: 64 });
       await interaction.deferReply();
-      const mensagens  = await interaction.channel.messages.fetch({ limit: 100 });
+      const mensagens = await interaction.channel.messages.fetch({ limit: 100 });
       const transcript = mensagens.reverse().map((m) => `[${new Date(m.createdTimestamp).toLocaleString("pt-BR")}] ${m.author.tag}: ${m.content || "[anexo/embed]"}`).join("\n");
       await enviarLogTicket(interaction.guild,
         new EmbedBuilder().setTitle("📋 Ticket Fechado").setColor("Red")
@@ -1006,13 +806,13 @@ client.on("interactionCreate", async (interaction) => {
         delete apostas[interaction.message.id];
         return interaction.update({ content: `❌ <@${aposta.desafiado}> recusou a aposta!`, embeds: [], components: [] });
       }
-      const pD  = getPerfil(aposta.desafiante);
+      const pD = getPerfil(aposta.desafiante);
       const pDo = getPerfil(aposta.desafiado);
-      if (pD.saldo < aposta.valor)  { delete apostas[interaction.message.id]; return interaction.update({ content: `❌ <@${aposta.desafiante}> não tem mais ZéCoins!`, embeds: [], components: [] }); }
+      if (pD.saldo < aposta.valor) { delete apostas[interaction.message.id]; return interaction.update({ content: `❌ <@${aposta.desafiante}> não tem mais ZéCoins!`, embeds: [], components: [] }); }
       if (pDo.saldo < aposta.valor) { delete apostas[interaction.message.id]; return interaction.update({ content: `❌ Você não tem ZéCoins suficientes!`, embeds: [], components: [] }); }
-      const resultado  = Math.random() < 0.5 ? "cara" : "coroa";
+      const resultado = Math.random() < 0.5 ? "cara" : "coroa";
       const vencedorId = resultado === "cara" ? aposta.desafiante : aposta.desafiado;
-      const perdedorId = resultado === "cara" ? aposta.desafiado  : aposta.desafiante;
+      const perdedorId = resultado === "cara" ? aposta.desafiado : aposta.desafiante;
       getPerfil(vencedorId).saldo += aposta.valor;
       getPerfil(perdedorId).saldo -= aposta.valor;
       delete apostas[interaction.message.id];
@@ -1034,8 +834,6 @@ client.on("interactionCreate", async (interaction) => {
       if (!giveaway || giveaway.ended) {
         return interaction.reply({ content: "❌ Este giveaway já foi encerrado ou não existe mais.", flags: 64 });
       }
-
-      // Verificar cargo obrigatório
       if (giveaway.requiredRole) {
         const member = interaction.member;
         if (!member.roles.cache.has(giveaway.requiredRole)) {
@@ -1043,49 +841,32 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: `❌ Você precisa do cargo **${role ? role.name : "desconhecido"}** para participar deste giveaway!`, flags: 64 });
         }
       }
-
-      // Verificar se já participou
       if (giveaway.entered.includes(interaction.user.id)) {
         return interaction.reply({ content: "❌ Você já está participando deste giveaway!", flags: 64 });
       }
-
-      // Adicionar participante
       giveaway.entered.push(interaction.user.id);
+      saveData(DATA_FILES.giveaways, giveaways);
       await interaction.reply({ content: "✅ Você entrou no giveaway! Boa sorte! 🍀", flags: 64 });
-
-      // Atualizar embed com novo número de participantes
       await atualizarGiveaway(messageId);
     }
 
     if (interaction.customId.startsWith("giveaway_ended_")) {
-      // Botão desabilitado, apenas responder com mensagem
       return interaction.reply({ content: "Este giveaway já foi encerrado.", flags: 64 });
     }
 
-    // ============================================================
-    // BOTÕES DO /deletar-canal
-    // ============================================================
+    // Botões de deletar canal
     if (interaction.customId.startsWith("confirmar_deletar_canal_")) {
       const canalId = interaction.customId.split("_")[3];
       const canal = await interaction.guild.channels.fetch(canalId).catch(() => null);
       if (!canal) {
-        return interaction.update({
-          content: "❌ Este canal já foi deletado ou não existe mais.",
-          components: []
-        });
+        return interaction.update({ content: "❌ Este canal já foi deletado ou não existe mais.", components: [] });
       }
-
       if (!temCargoMod(interaction.member)) {
-        return interaction.update({
-          content: "❌ Você não tem permissão para deletar canais.",
-          components: []
-        });
+        return interaction.update({ content: "❌ Você não tem permissão para deletar canais.", components: [] });
       }
-
       try {
         const nomeCanal = canal.name;
         await canal.delete(`Deletado por ${interaction.user.tag}`);
-
         const embedLog = new EmbedBuilder()
           .setTitle("🗑️ Canal Deletado")
           .setColor("Red")
@@ -1096,25 +877,15 @@ client.on("interactionCreate", async (interaction) => {
           )
           .setTimestamp();
         await enviarLogMod(interaction.guild, embedLog);
-
-        await interaction.update({
-          content: `✅ O canal **#${nomeCanal}** foi deletado com sucesso por ${interaction.user}.`,
-          components: []
-        });
+        await interaction.update({ content: `✅ O canal **#${nomeCanal}** foi deletado com sucesso por ${interaction.user}.`, components: [] });
       } catch (err) {
         console.error("[ERRO DELETAR CANAL]", err);
-        await interaction.update({
-          content: "❌ Erro ao deletar o canal. Verifique minhas permissões (preciso de `Gerenciar Canais`).",
-          components: []
-        });
+        await interaction.update({ content: "❌ Erro ao deletar o canal. Verifique minhas permissões.", components: [] });
       }
     }
 
     if (interaction.customId === "cancelar_deletar_canal") {
-      await interaction.update({
-        content: "❌ Operação cancelada. Nenhum canal foi deletado.",
-        components: []
-      });
+      await interaction.update({ content: "❌ Operação cancelada. Nenhum canal foi deletado.", components: [] });
     }
 
     return;
@@ -1124,17 +895,13 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isModalSubmit()) {
     if (interaction.customId === "modal_avaliacao_staff") {
       const staffName = interaction.fields.getTextInputValue("staff_name_input");
-      const comment   = interaction.fields.getTextInputValue("comment_input");
-      const rating    = parseInt(interaction.fields.getTextInputValue("rating_input"));
-
+      const comment = interaction.fields.getTextInputValue("comment_input");
+      const rating = parseInt(interaction.fields.getTextInputValue("rating_input"));
       if (isNaN(rating) || rating < 1 || rating > 5) {
         return interaction.reply({ content: "❌ A nota deve ser um número entre 1 e 5.", ephemeral: true });
       }
-
       const estrelas = "⭐".repeat(rating);
-
       const logChannel = await interaction.guild.channels.fetch(CANAL_AVALIACOES_LOGS_ID).catch(() => null);
-
       if (logChannel) {
         const embed = new EmbedBuilder()
           .setTitle("📝 Nova Avaliação de Staff")
@@ -1146,9 +913,7 @@ client.on("interactionCreate", async (interaction) => {
             { name: "💬 Comentário", value: comment || "Nenhum comentário." }
           )
           .setTimestamp();
-
         await logChannel.send({ embeds: [embed] });
-
         const agora = Date.now();
         const ultima = ultimaAvaliacao[interaction.user.id] || 0;
         let ganhouCoins = false;
@@ -1156,13 +921,12 @@ client.on("interactionCreate", async (interaction) => {
           const perfil = getPerfil(interaction.user.id);
           perfil.saldo += 200;
           ultimaAvaliacao[interaction.user.id] = agora;
+          saveData(DATA_FILES.ultimaAvaliacao, ultimaAvaliacao);
           ganhouCoins = true;
         }
-
         const mensagem = ganhouCoins
           ? `✅ Sua avaliação foi enviada com sucesso! Você ganhou **200 ZéCoins** pela sua participação.`
           : `✅ Sua avaliação foi enviada com sucesso! (Recompensa não concedida pois você já avaliou nas últimas 24h.)`;
-
         await interaction.reply({ content: mensagem, ephemeral: true });
       } else {
         await interaction.reply({ content: "❌ Não foi possível encontrar o canal de logs de avaliação. Por favor, contate um administrador.", ephemeral: true });
@@ -1175,19 +939,19 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === "ticket_categoria") {
       const categoria = interaction.values[0];
-      const userId    = interaction.user.id;
-      const guild     = interaction.guild;
+      const userId = interaction.user.id;
+      const guild = interaction.guild;
       const ticketExistente = Object.values(tickets).find((t) => t.userId === userId);
       if (ticketExistente) return interaction.reply({ content: "❌ Você já tem um ticket aberto!", flags: 64 });
       await interaction.deferReply({ flags: 64 });
-      const nomes = { 
+      const nomes = {
         duvida_formulario: "📜 Dúvida sobre Formulário",
-        duvida_script: "📜 Dúvida Script", 
-        duvida_executor: "⚙️ Dúvida Executor", 
-        outros: "💬 Outros" 
+        duvida_script: "📜 Dúvida Script",
+        duvida_executor: "⚙️ Dúvida Executor",
+        outros: "💬 Outros"
       };
       const nomeCategoria = nomes[categoria] || categoria;
-      const nomeCanal     = `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+      const nomeCanal = `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
       try {
         const canalTicket = await guild.channels.create({
           name: nomeCanal, type: ChannelType.GuildText, parent: CATEGORIA_TICKETS_ID,
@@ -1195,7 +959,7 @@ client.on("interactionCreate", async (interaction) => {
             { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
             { id: userId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
             { id: CARGO_SUPORTE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-            { id: CARGO_STAFF_ID,   allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: CARGO_STAFF_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
           ],
         });
         const agora = Date.now();
@@ -1227,7 +991,7 @@ client.on("interactionCreate", async (interaction) => {
   // ---- COMANDOS SLASH ----
   if (!interaction.isChatInputCommand()) return;
 
-  // --- Comandos existentes (resumidos) ---
+  // --- Comandos existentes (mantidos) ---
   if (interaction.commandName === "say") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const texto = interaction.options.getString("mensagem");
@@ -1243,8 +1007,8 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "video") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    const link   = interaction.options.getString("link");
-    const canal  = interaction.options.getChannel("canal");
+    const link = interaction.options.getString("link");
+    const canal = interaction.options.getChannel("canal");
     const titulo = interaction.options.getString("titulo");
     const imagem = interaction.options.getString("imagem");
     const videoIdMatch = link.match(/(?:youtu\.be\/|v=)([a-zA-Z0-9_-]{11})/);
@@ -1260,19 +1024,20 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "diario") {
     const perfil = getPerfil(interaction.user.id);
-    const agora  = Date.now();
-    const cd     = 24 * 60 * 60 * 1000;
+    const agora = Date.now();
+    const cd = 24 * 60 * 60 * 1000;
     if (agora - perfil.ultimoDiario < cd) return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoDiario))}**.`, flags: 64 });
     const r = Math.floor(Math.random() * 51) + 50;
-    perfil.saldo += r; 
+    perfil.saldo += r;
     perfil.ultimoDiario = agora;
+    saveData(DATA_FILES.economia, economia);
     await interaction.reply(`💰 ${interaction.user} resgatou **${r} ZéCoins**! Saldo: **${perfil.saldo}**`);
   }
 
   if (interaction.commandName === "trabalhar") {
     const perfil = getPerfil(interaction.user.id);
-    const agora  = Date.now();
-    const cd     = 60 * 60 * 1000;
+    const agora = Date.now();
+    const cd = 60 * 60 * 1000;
     if (agora - perfil.ultimoTrabalho < cd) return interaction.reply({ content: `⏳ Volte em **${formatarTempo(cd - (agora - perfil.ultimoTrabalho))}**.`, flags: 64 });
     const trabalhos = ["entregou pizza e ganhou", "consertou um computador e faturou", "vendeu um script raro e lucrou", "ajudou um streamer e recebeu", "fez um frila de design e cobrou"];
     const trabalho = trabalhos[Math.floor(Math.random() * trabalhos.length)];
@@ -1283,14 +1048,15 @@ client.on("interactionCreate", async (interaction) => {
       bonus = Math.floor(ganho * 0.5);
       ganho += bonus;
     }
-    perfil.saldo += ganho; 
+    perfil.saldo += ganho;
     perfil.ultimoTrabalho = agora;
+    saveData(DATA_FILES.economia, economia);
     const msgBonus = temSorte ? ` (com 🍀 Sorte Extra: +${bonus} de bônus!)` : '';
     await interaction.reply(`💼 ${interaction.user} ${trabalho} **${ganho} ZéCoins**!${msgBonus} Saldo: **${perfil.saldo}**`);
   }
 
   if (interaction.commandName === "carteira") {
-    const user   = interaction.options.getUser("usuario") || interaction.user;
+    const user = interaction.options.getUser("usuario") || interaction.user;
     const perfil = getPerfil(user.id);
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle(`💰 Carteira de ${user.username}`).setDescription(`Saldo: **${perfil.saldo} ZéCoins**`).setColor("Gold").setThumbnail(user.displayAvatarURL())] });
   }
@@ -1303,7 +1069,7 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "comprar") {
     const itemId = interaction.options.getString("item");
-    const item   = LOJA.find((i) => i.id === itemId);
+    const item = LOJA.find((i) => i.id === itemId);
     if (!item) return interaction.reply({ content: "❌ Item não encontrado.", flags: 64 });
     const perfil = getPerfil(interaction.user.id);
     if (perfil.saldo < item.preco) return interaction.reply({ content: `❌ Saldo insuficiente! Você tem **${perfil.saldo}** e precisa de **${item.preco}**.`, flags: 64 });
@@ -1316,12 +1082,14 @@ client.on("interactionCreate", async (interaction) => {
     } else {
       const inv = getInventario(interaction.user.id);
       inv[item.id] = (inv[item.id] || 0) + 1;
+      saveData(DATA_FILES.inventarios, inventarios);
       await interaction.reply(`✅ Você comprou **${item.nome}**! Use \`/usar item:${item.id}\``);
     }
+    saveData(DATA_FILES.economia, economia);
   }
 
   if (interaction.commandName === "inventario") {
-    const inv   = getInventario(interaction.user.id);
+    const inv = getInventario(interaction.user.id);
     const itens = Object.entries(inv).filter(([, q]) => q > 0);
     if (!itens.length) return interaction.reply({ content: "🎒 Inventário vazio!", flags: 64 });
     const linhas = itens.map(([id, q]) => `${LOJA.find((i) => i.id === id)?.nome || id} — **${q}x**`);
@@ -1329,10 +1097,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "usar") {
-    const itemId  = interaction.options.getString("item");
-    const alvo    = interaction.options.getUser("usuario");
+    const itemId = interaction.options.getString("item");
+    const alvo = interaction.options.getUser("usuario");
     const novoApe = interaction.options.getString("novo-apelido");
-    const inv     = getInventario(interaction.user.id);
+    const inv = getInventario(interaction.user.id);
     if (!inv[itemId] || inv[itemId] <= 0) return interaction.reply({ content: "❌ Você não tem esse item!", flags: 64 });
 
     if (itemId === "silenciador") {
@@ -1341,6 +1109,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!membro) return interaction.reply({ content: "❌ Usuário não encontrado.", flags: 64 });
       try {
         await membro.timeout(5 * 60 * 1000); inv[itemId]--;
+        saveData(DATA_FILES.inventarios, inventarios);
         await interaction.reply(`🔇 **${interaction.user}** usou Silenciador em **${alvo}**!`);
         await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔇 Silenciador Usado").setColor("Orange").addFields({ name: "Usado por", value: interaction.user.tag }, { name: "Alvo", value: alvo.tag }).setTimestamp());
       } catch { await interaction.reply({ content: "❌ Não consegui mutar!", flags: 64 }); }
@@ -1351,6 +1120,7 @@ client.on("interactionCreate", async (interaction) => {
       const antigo = membro.nickname || membro.user.username;
       try {
         await membro.setNickname(novoApe); inv[itemId]--;
+        saveData(DATA_FILES.inventarios, inventarios);
         await interaction.reply(`🏷️ **${interaction.user}** mudou apelido de **${alvo}** para **${novoApe}** por 1h!`);
         setTimeout(async () => { try { await membro.setNickname(antigo === membro.user.username ? null : antigo); } catch {} }, 60 * 60 * 1000);
         await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🏷️ Apelido Alterado").setColor("Blue").addFields({ name: "Usado por", value: interaction.user.tag }, { name: "Alvo", value: alvo.tag }, { name: "Antigo", value: antigo }, { name: "Novo", value: novoApe }).setTimestamp());
@@ -1363,10 +1133,14 @@ client.on("interactionCreate", async (interaction) => {
       const s = Math.random() * 100;
       for (const p of premios) { ac += p.chance; if (s <= ac) { premio = p; break; } }
       getPerfil(interaction.user.id).saldo += premio.valor; inv[itemId]--;
+      saveData(DATA_FILES.economia, economia);
+      saveData(DATA_FILES.inventarios, inventarios);
       await interaction.reply({ embeds: [new EmbedBuilder().setTitle("🎁 Caixa Misteriosa!").setColor("Gold").setDescription(`${premio.label}\n\n${interaction.user} ganhou **${premio.valor} ZéCoins**!`).setTimestamp()] });
     } else if (itemId === "sorte_extra") {
       sorteExtraAtivo[interaction.user.id] = Date.now() + 24 * 60 * 60 * 1000;
+      saveData(DATA_FILES.sorteExtraAtivo, sorteExtraAtivo);
       inv[itemId]--;
+      saveData(DATA_FILES.inventarios, inventarios);
       await interaction.reply(`🍀 **Sorte Extra ativada!** Agora você ganha 50% de bônus no **/trabalhar** por 24h!`);
     } else { await interaction.reply({ content: "❌ Item não pode ser usado assim.", flags: 64 }); }
   }
@@ -1382,7 +1156,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "transferir") {
-    const alvo  = interaction.options.getUser("usuario");
+    const alvo = interaction.options.getUser("usuario");
     const valor = interaction.options.getInteger("valor");
     if (alvo.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode transferir para si mesmo!", flags: 64 });
     if (alvo.bot) return interaction.reply({ content: "❌ Não pode transferir para um bot!", flags: 64 });
@@ -1393,6 +1167,7 @@ client.on("interactionCreate", async (interaction) => {
     if (perfilRemetente.saldo < valor) return interaction.reply({ content: `❌ Saldo insuficiente! Você tem **${perfilRemetente.saldo}** e precisa de **${valor}** (incluindo taxa de ${taxa}).`, flags: 64 });
     perfilRemetente.saldo -= valor;
     getPerfil(alvo.id).saldo += valorLiquido;
+    saveData(DATA_FILES.economia, economia);
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle("💸 Transferência Realizada!").setColor("Green")
       .addFields({ name: "De", value: `${interaction.user}` }, { name: "Para", value: `${alvo}` }, { name: "Valor", value: `${valor} ZéCoins` }, { name: "Taxa (5%)", value: `${taxa} ZéCoins` }, { name: "Recebido", value: `${valorLiquido} ZéCoins` })
       .setTimestamp()] });
@@ -1401,15 +1176,16 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "dar-moedas") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const user = interaction.options.getUser("usuario");
-    const qtd  = interaction.options.getInteger("quantidade");
-    const p    = getPerfil(user.id);
+    const qtd = interaction.options.getInteger("quantidade");
+    const p = getPerfil(user.id);
     p.saldo += qtd;
+    saveData(DATA_FILES.economia, economia);
     await interaction.reply(`✅ ${user} recebeu **${qtd} ZéCoins**! Saldo: **${p.saldo}**`);
   }
 
   if (interaction.commandName === "apostar") {
     const desafiado = interaction.options.getUser("usuario");
-    const valor     = interaction.options.getInteger("valor");
+    const valor = interaction.options.getInteger("valor");
     if (desafiado.id === interaction.user.id) return interaction.reply({ content: "❌ Não pode apostar contra si mesmo!", flags: 64 });
     if (desafiado.bot) return interaction.reply({ content: "❌ Não pode apostar contra um bot!", flags: 64 });
     if (valor <= 0) return interaction.reply({ content: "❌ Valor precisa ser maior que 0!", flags: 64 });
@@ -1428,10 +1204,7 @@ client.on("interactionCreate", async (interaction) => {
     const ultima = ultimaAvaliacao[interaction.user.id] || 0;
     if (agora - ultima < COOLDOWN_AVALIACAO) {
       const tempoRestante = COOLDOWN_AVALIACAO - (agora - ultima);
-      return interaction.reply({
-        content: `⏳ Você já avaliou recentemente! Aguarde **${formatarTempo(tempoRestante)}** para avaliar novamente e ganhar mais ZéCoins.`,
-        flags: 64
-      });
+      return interaction.reply({ content: `⏳ Você já avaliou recentemente! Aguarde **${formatarTempo(tempoRestante)}** para avaliar novamente e ganhar mais ZéCoins.`, flags: 64 });
     }
     const staff = interaction.options.getUser("staff");
     if (staff.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se avaliar!", flags: 64 });
@@ -1446,7 +1219,7 @@ client.on("interactionCreate", async (interaction) => {
       new ButtonBuilder().setCustomId(`avaliacao_chat_2_${staff.id}`).setLabel("⭐⭐").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`avaliacao_chat_3_${staff.id}`).setLabel("⭐⭐⭐").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`avaliacao_chat_4_${staff.id}`).setLabel("⭐⭐⭐⭐").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`avaliacao_chat_5_${staff.id}`).setLabel("⭐⭐⭐⭐⭐").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`avaliacao_chat_5_${staff.id}`).setLabel("⭐⭐⭐⭐⭐").setStyle(ButtonStyle.Success)
     );
     await interaction.reply({ embeds: [embed], components: [botoes], flags: 64 });
   }
@@ -1474,10 +1247,7 @@ client.on("interactionCreate", async (interaction) => {
         )
         .setFooter({ text: "Scripts SDZ • Ofuscador Luau" })
         .setTimestamp();
-      await interaction.editReply({
-        embeds: [embed],
-        files: [{ attachment: buffer, name: "script_ofuscado.lua" }],
-      });
+      await interaction.editReply({ embeds: [embed], files: [{ attachment: buffer, name: "script_ofuscado.lua" }] });
     } catch (err) {
       console.error("[ERRO OFUSCADOR]", err.message);
       await interaction.editReply("❌ Erro ao ofuscar o código. Verifique se é um script Luau válido.");
@@ -1493,13 +1263,14 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "retirar-ficha") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
-    const user       = interaction.options.getUser("usuario");
+    const user = interaction.options.getUser("usuario");
     const quantidade = interaction.options.getInteger("quantidade") || 1;
-    const inv        = getInventario(user.id);
+    const inv = getInventario(user.id);
     if (!inv["ficha_roblox"] || inv["ficha_roblox"] < quantidade) {
       return interaction.reply({ content: `❌ ${user.username} não possui ${quantidade} Ficha(s) de Serviço Roblox.`, flags: 64 });
     }
     inv["ficha_roblox"] -= quantidade;
+    saveData(DATA_FILES.inventarios, inventarios);
     await interaction.reply(`✅ ${quantidade} Ficha(s) retirada(s) do inventário de **${user.username}**.`);
     await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🎟️ Ficha Retirada").setColor("Red")
       .addFields({ name: "Staff", value: interaction.user.tag }, { name: "Usuário", value: user.tag }, { name: "Quantidade", value: `${quantidade}` }).setTimestamp());
@@ -1552,7 +1323,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "kick") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
-    const motivo  = interaction.options.getString("motivo") || "Não informado";
+    const motivo = interaction.options.getString("motivo") || "Não informado";
     if (usuario.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se expulsar.", flags: 64 });
     const member = await interaction.guild.members.fetch(usuario.id).catch(() => null);
     if (!member) return interaction.reply({ content: "❌ Usuário não encontrado no servidor.", flags: 64 });
@@ -1570,7 +1341,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "ban") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
-    const motivo  = interaction.options.getString("motivo") || "Não informado";
+    const motivo = interaction.options.getString("motivo") || "Não informado";
     if (usuario.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se banir.", flags: 64 });
     const member = await interaction.guild.members.fetch(usuario.id).catch(() => null);
     if (member && !member.bannable) return interaction.reply({ content: "❌ Não tenho permissão para banir este usuário.", flags: 64 });
@@ -1586,9 +1357,9 @@ client.on("interactionCreate", async (interaction) => {
   // ---- /mute ----
   if (interaction.commandName === "mute") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
-    const usuario   = interaction.options.getUser("usuario");
-    const duracao   = interaction.options.getInteger("duracao");
-    const motivo    = interaction.options.getString("motivo") || "Não informado";
+    const usuario = interaction.options.getUser("usuario");
+    const duracao = interaction.options.getInteger("duracao");
+    const motivo = interaction.options.getString("motivo") || "Não informado";
     if (usuario.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se mutar.", flags: 64 });
     const member = await interaction.guild.members.fetch(usuario.id).catch(() => null);
     if (!member) return interaction.reply({ content: "❌ Usuário não encontrado no servidor.", flags: 64 });
@@ -1607,7 +1378,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "addmoedas") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuariosStr = interaction.options.getString("usuarios");
-    const quantidade  = interaction.options.getInteger("quantidade");
+    const quantidade = interaction.options.getInteger("quantidade");
     const mentionRegex = /<@!?(\d+)>/g;
     const ids = [];
     let match;
@@ -1630,6 +1401,7 @@ client.on("interactionCreate", async (interaction) => {
         resultados.push(`❌ ID ${id} (usuário não encontrado)`);
       }
     }
+    saveData(DATA_FILES.economia, economia);
     const embedLog = new EmbedBuilder().setTitle("💰 Adição em Massa de ZéCoins").setColor("Green").addFields({ name: "Staff", value: interaction.user.tag }, { name: "Quantidade", value: `${quantidade} por usuário` }, { name: "Sucessos", value: `${sucessos}` }, { name: "Falhas", value: `${falhas}` }).setTimestamp();
     await enviarLogMod(interaction.guild, embedLog);
     await interaction.reply({
@@ -1693,15 +1465,10 @@ client.on("interactionCreate", async (interaction) => {
   // ---- /deletar-canal ----
   if (interaction.commandName === "deletar-canal") {
     if (!temCargoMod(interaction.member)) {
-      return interaction.reply({
-        content: "❌ Você não tem permissão para usar este comando. Apenas staff pode deletar canais.",
-        flags: 64
-      });
+      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando. Apenas staff pode deletar canais.", flags: 64 });
     }
-
     const canal = interaction.options.getChannel("canal") || interaction.channel;
     const motivo = interaction.options.getString("motivo") || "Não informado";
-
     const canaisProtegidos = [
       CANAL_SUGESTOES_ID,
       CANAL_LOGS_MOD_ID,
@@ -1712,12 +1479,8 @@ client.on("interactionCreate", async (interaction) => {
       CANAL_AVALIACOES_LOGS_ID
     ];
     if (canaisProtegidos.includes(canal.id)) {
-      return interaction.reply({
-        content: "❌ Este canal é protegido e não pode ser deletado por segurança.",
-        flags: 64
-      });
+      return interaction.reply({ content: "❌ Este canal é protegido e não pode ser deletado por segurança.", flags: 64 });
     }
-
     await interaction.reply({
       content: `⚠️ Você tem certeza que deseja deletar o canal **#${canal.name}**?\nMotivo: ${motivo}\n\nClique em **Confirmar** para prosseguir. Esta ação é **irreversível**.`,
       components: [
@@ -1743,7 +1506,6 @@ client.on("interactionCreate", async (interaction) => {
     const sub = interaction.options.getSubcommand();
 
     if (sub === "criar") {
-      // Verificar permissão de staff
       if (!temCargoMod(interaction.member)) {
         return interaction.reply({ content: "❌ Apenas staff pode criar giveaways.", flags: 64 });
       }
@@ -1754,7 +1516,6 @@ client.on("interactionCreate", async (interaction) => {
       const vencedores = interaction.options.getInteger("vencedores") || 1;
       const requiredRole = interaction.options.getRole("cargo_obrigatorio")?.id || null;
 
-      // Converter duração (ex: 1h, 30m, 1d, 2d4h)
       let duracaoMs = 0;
       const match = duracaoStr.match(/(\d+)([hmsd])/g);
       if (!match) {
@@ -1775,7 +1536,6 @@ client.on("interactionCreate", async (interaction) => {
 
       const endTime = Date.now() + duracaoMs;
 
-      // Criar embed do giveaway
       const embed = new EmbedBuilder()
         .setTitle(`🎉 GIVEAWAY: ${premio}`)
         .setColor("Gold")
@@ -1790,10 +1550,8 @@ client.on("interactionCreate", async (interaction) => {
           .setStyle(ButtonStyle.Primary)
       );
 
-      // Enviar mensagem
       const msg = await canal.send({ embeds: [embed], components: [row] });
 
-      // Armazenar giveaway
       giveaways[msg.id] = {
         channelId: canal.id,
         prize: premio,
@@ -1806,8 +1564,8 @@ client.on("interactionCreate", async (interaction) => {
         ended: false,
         winnerIds: [],
       };
+      saveData(DATA_FILES.giveaways, giveaways);
 
-      // Atualizar o customId do botão com o messageId
       const newRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`giveaway_join_${msg.id}`)
@@ -1818,7 +1576,6 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.reply({ content: `✅ Giveaway criado com sucesso em ${canal}!`, flags: 64 });
 
-      // Log
       const logEmbed = new EmbedBuilder()
         .setTitle("🎁 Giveaway Criado")
         .setColor("Gold")
@@ -1834,28 +1591,21 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     else if (sub === "reroll") {
-      // Verificar permissão de staff
       if (!temCargoMod(interaction.member)) {
         return interaction.reply({ content: "❌ Apenas staff pode usar reroll.", flags: 64 });
       }
-
       const messageId = interaction.options.getString("mensagem_id");
       const giveaway = giveaways[messageId];
-
       if (!giveaway) {
         return interaction.reply({ content: "❌ Giveaway não encontrado ou já removido.", flags: 64 });
       }
-
       if (!giveaway.ended) {
         return interaction.reply({ content: "❌ Este giveaway ainda está ativo. Espere ele terminar ou use `/giveaway encerrar` primeiro.", flags: 64 });
       }
-
       const participantes = giveaway.entered;
       if (participantes.length === 0) {
         return interaction.reply({ content: "❌ Ninguém participou deste giveaway. Não é possível reroll.", flags: 64 });
       }
-
-      // Sortear novamente
       const shuffled = [...participantes];
       for (let i = shuffled.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -1863,10 +1613,8 @@ client.on("interactionCreate", async (interaction) => {
       }
       const novosVencedores = shuffled.slice(0, giveaway.winners);
       giveaway.winnerIds = novosVencedores;
-
       const mencoes = novosVencedores.map(id => `<@${id}>`).join(", ");
 
-      // Atualizar mensagem do giveaway (já que ela está com embed de encerrado)
       const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
       if (canal) {
         const msg = await canal.messages.fetch(messageId).catch(() => null);
@@ -1879,7 +1627,6 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.reply({ content: `🎉 **Novos vencedores sorteados!** ${mencoes}`, flags: 64 });
 
-      // Log
       const logEmbed = new EmbedBuilder()
         .setTitle("🎁 Reroll de Giveaway")
         .setColor("Gold")
@@ -1896,12 +1643,10 @@ client.on("interactionCreate", async (interaction) => {
       if (ativos.length === 0) {
         return interaction.reply({ content: "📭 Não há giveaways ativos no momento.", flags: 64 });
       }
-
       const linhas = ativos.map(([id, g]) => {
         const tempoRestante = g.endTime - Date.now();
         return `**${g.prize}** — <#${g.channelId}> — ${formatarTempo(tempoRestante)} restante — ${g.entered.length} participantes — ID: \`${id}\``;
       });
-
       const embed = new EmbedBuilder()
         .setTitle("🎁 Giveaways Ativos")
         .setColor("Blue")
@@ -1914,19 +1659,14 @@ client.on("interactionCreate", async (interaction) => {
       if (!temCargoMod(interaction.member)) {
         return interaction.reply({ content: "❌ Apenas staff pode encerrar giveaways.", flags: 64 });
       }
-
       const messageId = interaction.options.getString("mensagem_id");
       const giveaway = giveaways[messageId];
-
       if (!giveaway) {
         return interaction.reply({ content: "❌ Giveaway não encontrado ou já removido.", flags: 64 });
       }
-
       if (giveaway.ended) {
         return interaction.reply({ content: "❌ Este giveaway já foi encerrado.", flags: 64 });
       }
-
-      // Forçar finalização
       await finalizarGiveaway(messageId);
       await interaction.reply({ content: `✅ Giveaway **${giveaway.prize}** foi encerrado manualmente.`, flags: 64 });
     }
