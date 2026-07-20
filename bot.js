@@ -12,8 +12,14 @@ const client = new Client({
   ],
 });
 
-// ===================== CONFIGURAÇÃO =====================
-const TOKEN = process.env.TOKEN;  // Agora usa a variável de ambiente diretamente
+// ===================== TOKEN =====================
+const TOKEN = process.env.TOKEN;
+if (!TOKEN) {
+  console.error("❌ TOKEN não encontrado! Defina a variável de ambiente TOKEN.");
+  process.exit(1);
+}
+
+// ===================== CONFIGURAÇÕES =====================
 const GUILD_ID = "1508302017980924064";
 const CANAL_SUGESTOES_ID = "1511518813701804062";
 const CANAL_LOGS_MOD_ID = "1523437994848157797";
@@ -26,16 +32,19 @@ const CARGO_SUPORTE_ID = "1513399309306036355";
 const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const TAXA_TRANSFERENCIA = 0.05;
+const COOLDOWN_AVALIACAO = 24 * 60 * 60 * 1000;
 
 const CARGOS_ISENTOS = ["1509304131263926292", "1508405150572871720"];
 const CARGOS_MODERACAO = ["1508405150572871720"];
-const COOLDOWN_AVALIACAO = 24 * 60 * 60 * 1000;
 
 // ============================================================
 // PERSISTÊNCIA DE DADOS (JSON)
 // ============================================================
 const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR);
+  console.log("📁 Pasta 'data' criada.");
+}
 
 const DATA_FILES = {
   economia: 'economia.json',
@@ -45,17 +54,23 @@ const DATA_FILES = {
   sorteExtraAtivo: 'sorteExtraAtivo.json',
 };
 
+// Criar arquivos vazios se não existirem
+for (const [key, fileName] of Object.entries(DATA_FILES)) {
+  const filePath = path.join(DATA_DIR, fileName);
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, JSON.stringify({}, null, 2));
+    console.log(`📄 Arquivo criado: ${fileName}`);
+  }
+}
+
 function loadData(fileName) {
   const filePath = path.join(DATA_DIR, fileName);
-  if (fs.existsSync(filePath)) {
-    try {
-      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch (e) {
-      console.error(`Erro ao carregar ${fileName}:`, e);
-      return {};
-    }
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (e) {
+    console.error(`Erro ao carregar ${fileName}:`, e);
+    return {};
   }
-  return {};
 }
 
 function saveData(fileName, data) {
@@ -171,51 +186,42 @@ async function enviarDMPunicao(user, staffTag, acao, motivo) {
 async function atualizarGiveaway(messageId) {
   const giveaway = giveaways[messageId];
   if (!giveaway || giveaway.ended) return;
-
   const agora = Date.now();
   const tempoRestante = giveaway.endTime - agora;
-
   if (tempoRestante <= 0) {
     await finalizarGiveaway(messageId);
     return;
   }
-
   const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
   if (!canal) return;
   const msg = await canal.messages.fetch(messageId).catch(() => null);
   if (!msg) return;
-
   const embed = new EmbedBuilder()
     .setTitle(`🎉 GIVEAWAY: ${giveaway.prize}`)
     .setColor("Gold")
     .setDescription(`Clique no botão **Participar** para concorrer!\n\n**Tempo restante:** ${formatarTempo(tempoRestante)}\n**Vencedores:** ${giveaway.winners}\n**Participantes:** ${giveaway.entered.length}`)
     .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"} • ID: ${messageId}` })
     .setTimestamp();
-
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`giveaway_join_${messageId}`)
       .setLabel("🎁 Participar")
       .setStyle(ButtonStyle.Primary)
   );
-
   await msg.edit({ embeds: [embed], components: [row] });
 }
 
 async function finalizarGiveaway(messageId) {
   const giveaway = giveaways[messageId];
   if (!giveaway || giveaway.ended) return;
-
   giveaway.ended = true;
   const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
   if (!canal) return;
   const msg = await canal.messages.fetch(messageId).catch(() => null);
   if (!msg) return;
-
   const participantes = giveaway.entered;
   let vencedores = [];
   const numeroVencedores = Math.min(giveaway.winners, participantes.length);
-
   if (participantes.length === 0) {
     const embed = new EmbedBuilder()
       .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
@@ -235,7 +241,6 @@ async function finalizarGiveaway(messageId) {
     saveData(DATA_FILES.giveaways, giveaways);
     return;
   }
-
   const shuffled = [...participantes];
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -243,7 +248,6 @@ async function finalizarGiveaway(messageId) {
   }
   vencedores = shuffled.slice(0, numeroVencedores);
   giveaway.winnerIds = vencedores;
-
   const mencoes = vencedores.map(id => `<@${id}>`).join(", ");
   const embed = new EmbedBuilder()
     .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
@@ -255,7 +259,6 @@ async function finalizarGiveaway(messageId) {
     )
     .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"}` })
     .setTimestamp();
-
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`giveaway_ended_${messageId}`)
@@ -264,7 +267,6 @@ async function finalizarGiveaway(messageId) {
       .setDisabled(true)
   );
   await msg.edit({ embeds: [embed], components: [row] });
-
   const logEmbed = new EmbedBuilder()
     .setTitle("🎁 Giveaway Finalizado")
     .setColor("Green")
@@ -275,13 +277,12 @@ async function finalizarGiveaway(messageId) {
     )
     .setTimestamp();
   await enviarLogMod(canal.guild, logEmbed);
-
   delete giveaways[messageId];
   saveData(DATA_FILES.giveaways, giveaways);
 }
 
 // ============================================================
-// PAINEL DE TICKET E AVALIAÇÃO (funções existentes)
+// PAINEL DE TICKET E AVALIAÇÃO
 // ============================================================
 async function enviarPainelTicket(guild) {
   try {
@@ -356,7 +357,7 @@ async function enviarAvaliacaoDM(user, staffTag, categoria, guild) {
 }
 
 // ============================================================
-// OFUSCADOR LUAU (mantido)
+// OFUSCADOR LUAU
 // ============================================================
 function ofuscarLuau(codigo) {
   function nomeAleatorio(tamanho = 8) {
@@ -497,16 +498,19 @@ client.once("ready", async () => {
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   try {
-    console.log("Started refreshing application (/) commands.");
+    console.log("🔄 Registrando comandos...");
     await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-    console.log("Successfully reloaded application (/) commands.");
+    console.log("✅ Comandos registrados com sucesso!");
   } catch (error) {
-    console.error(error);
+    console.error("❌ Erro ao registrar comandos:", error);
   }
 
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
     await enviarPainelAvaliacao(guild);
+    console.log("📌 Painel de avaliação enviado (se o canal existir).");
+  } else {
+    console.warn("⚠️ Servidor não encontrado. Verifique o GUILD_ID.");
   }
 
   // Iniciar loop de atualização de giveaways (a cada 15 segundos)
@@ -824,9 +828,7 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // ============================================================
-    // BOTÕES DE GIVEAWAY
-    // ============================================================
+    // Botões de giveaway
     if (interaction.customId.startsWith("giveaway_join_")) {
       const messageId = interaction.customId.replace("giveaway_join_", "");
       const giveaway = giveaways[messageId];
@@ -1499,7 +1501,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   // ============================================================
-  // 🆕 COMANDOS DE GIVEAWAY
+  // COMANDOS DE GIVEAWAY
   // ============================================================
   if (interaction.commandName === "giveaway") {
     const sub = interaction.options.getSubcommand();
@@ -1508,13 +1510,11 @@ client.on("interactionCreate", async (interaction) => {
       if (!temCargoMod(interaction.member)) {
         return interaction.reply({ content: "❌ Apenas staff pode criar giveaways.", flags: 64 });
       }
-
       const canal = interaction.options.getChannel("canal");
       const premio = interaction.options.getString("premio");
       const duracaoStr = interaction.options.getString("duracao");
       const vencedores = interaction.options.getInteger("vencedores") || 1;
       const requiredRole = interaction.options.getRole("cargo_obrigatorio")?.id || null;
-
       let duracaoMs = 0;
       const match = duracaoStr.match(/(\d+)([hmsd])/g);
       if (!match) {
@@ -1528,29 +1528,23 @@ client.on("interactionCreate", async (interaction) => {
         else if (unit === 'h') duracaoMs += num * 60 * 60 * 1000;
         else if (unit === 'd') duracaoMs += num * 24 * 60 * 60 * 1000;
       }
-
       if (duracaoMs <= 0) {
         return interaction.reply({ content: "❌ Duração deve ser maior que 0.", flags: 64 });
       }
-
       const endTime = Date.now() + duracaoMs;
-
       const embed = new EmbedBuilder()
         .setTitle(`🎉 GIVEAWAY: ${premio}`)
         .setColor("Gold")
         .setDescription(`Clique no botão **Participar** para concorrer!\n\n**Tempo restante:** ${formatarTempo(duracaoMs)}\n**Vencedores:** ${vencedores}\n**Participantes:** 0`)
         .setFooter({ text: `Host: ${interaction.user.tag} • ID do host: ${interaction.user.id}` })
         .setTimestamp();
-
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`giveaway_join_temp`) // será substituído após enviar
+          .setCustomId(`giveaway_join_temp`)
           .setLabel("🎁 Participar")
           .setStyle(ButtonStyle.Primary)
       );
-
       const msg = await canal.send({ embeds: [embed], components: [row] });
-
       giveaways[msg.id] = {
         channelId: canal.id,
         prize: premio,
@@ -1564,7 +1558,6 @@ client.on("interactionCreate", async (interaction) => {
         winnerIds: [],
       };
       saveData(DATA_FILES.giveaways, giveaways);
-
       const newRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`giveaway_join_${msg.id}`)
@@ -1572,9 +1565,7 @@ client.on("interactionCreate", async (interaction) => {
           .setStyle(ButtonStyle.Primary)
       );
       await msg.edit({ components: [newRow] });
-
       await interaction.reply({ content: `✅ Giveaway criado com sucesso em ${canal}!`, flags: 64 });
-
       const logEmbed = new EmbedBuilder()
         .setTitle("🎁 Giveaway Criado")
         .setColor("Gold")
@@ -1613,7 +1604,6 @@ client.on("interactionCreate", async (interaction) => {
       const novosVencedores = shuffled.slice(0, giveaway.winners);
       giveaway.winnerIds = novosVencedores;
       const mencoes = novosVencedores.map(id => `<@${id}>`).join(", ");
-
       const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
       if (canal) {
         const msg = await canal.messages.fetch(messageId).catch(() => null);
@@ -1623,9 +1613,7 @@ client.on("interactionCreate", async (interaction) => {
           await msg.edit({ embeds: [embed] });
         }
       }
-
       await interaction.reply({ content: `🎉 **Novos vencedores sorteados!** ${mencoes}`, flags: 64 });
-
       const logEmbed = new EmbedBuilder()
         .setTitle("🎁 Reroll de Giveaway")
         .setColor("Gold")
