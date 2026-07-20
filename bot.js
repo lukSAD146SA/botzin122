@@ -1,4 +1,3 @@
-require('dotenv').config();
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
 const fs = require('fs');
 const path = require('path');
@@ -13,7 +12,8 @@ const client = new Client({
   ],
 });
 
-const TOKEN = process.env.TOKEN;
+// ===================== CONFIGURAÇÃO =====================
+const TOKEN = process.env.TOKEN;  // Agora usa a variável de ambiente diretamente
 const GUILD_ID = "1508302017980924064";
 const CANAL_SUGESTOES_ID = "1511518813701804062";
 const CANAL_LOGS_MOD_ID = "1523437994848157797";
@@ -450,7 +450,6 @@ client.once("ready", async () => {
 
   // Registrar comandos
   const commands = [
-    // Todos os comandos existentes (mantidos)
     new SlashCommandBuilder().setName("say").setDescription("Faz o bot enviar uma mensagem").addStringOption((opt) => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true)).addChannelOption((opt) => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
     new SlashCommandBuilder().setName("avatar").setDescription("Mostra a foto de perfil de alguém").addUserOption((opt) => opt.setName("usuario").setDescription("De quem ver o avatar").setRequired(false)),
     new SlashCommandBuilder().setName("video").setDescription("Anuncia um vídeo novo do YouTube").addStringOption((opt) => opt.setName("link").setDescription("Link do vídeo").setRequired(true)).addChannelOption((opt) => opt.setName("canal").setDescription("Canal onde anunciar").setRequired(true)).addStringOption((opt) => opt.setName("titulo").setDescription("Título personalizado").setRequired(false)).addStringOption((opt) => opt.setName("imagem").setDescription("Link de imagem").setRequired(false)),
