@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, AttachmentBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, AttachmentBuilder, WebhookClient } = require("discord.js");
 const fs = require('fs');
 const path = require('path');
 
@@ -33,7 +33,7 @@ const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 
 // Canal secreto para logs de código cru (ofuscador)
-const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503"; // ⚠️ SUBSTITUA
+const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503";
 
 const CARGOS_MODERACAO = ["1508405150572871720"];
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutos
@@ -43,7 +43,7 @@ const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutos
 // ============================================================
 const tickets = {};
 const stickyMessages = {};
-const userChunks = {}; // armazena escolha de fragmentos por canal de ticket
+const userChunks = {};
 const ticketTimeouts = {};
 
 // ============================================================
@@ -340,6 +340,274 @@ function contemPalavraGrave(texto) {
 }
 
 // ============================================================
+// CONFIGURAÇÃO PERSISTENTE (formulário)
+// ============================================================
+const CONFIG_PATH = path.join(__dirname, 'config.json');
+
+function lerConfig() {
+  try {
+    const data = fs.readFileSync(CONFIG_PATH, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return { canalFormulario: null, webhookURL: null };
+  }
+}
+
+function salvarConfig(config) {
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+// ============================================================
+// PERGUNTAS DO FORMULÁRIO (edite aqui)
+// ============================================================
+const PERGUNTAS = [
+  {
+    id: 'nome',
+    label: 'Qual o seu nome completo?',
+    style: TextInputStyle.Short,
+    placeholder: 'Ex: João Silva',
+    required: true,
+    minLength: 3,
+    maxLength: 60
+  },
+  {
+    id: 'idade',
+    label: 'Quantos anos você tem?',
+    style: TextInputStyle.Short,
+    placeholder: 'Ex: 18',
+    required: true,
+    minLength: 1,
+    maxLength: 3
+  },
+  {
+    id: 'discord',
+    label: 'Qual seu Discord (com tag)?',
+    style: TextInputStyle.Short,
+    placeholder: 'Ex: João#1234',
+    required: true,
+    minLength: 5,
+    maxLength: 40
+  },
+  {
+    id: 'experiencia',
+    label: 'Você já foi staff em algum outro servidor? Se sim, onde e por quanto tempo?',
+    style: TextInputStyle.Paragraph,
+    placeholder: 'Descreva sua experiência anterior...',
+    required: true,
+    maxLength: 500
+  },
+  {
+    id: 'disponibilidade',
+    label: 'Quantas horas por dia, em média, você consegue ficar online?',
+    style: TextInputStyle.Short,
+    placeholder: 'Ex: 4 horas',
+    required: true,
+    maxLength: 30
+  },
+  {
+    id: 'motivacao',
+    label: 'Por que você quer ser staff aqui?',
+    style: TextInputStyle.Paragraph,
+    placeholder: 'Explique sua motivação...',
+    required: true,
+    maxLength: 500
+  },
+  {
+    id: 'habilidades',
+    label: 'Você tem conhecimento em moderação (comandos, bots, etc.)? Descreva.',
+    style: TextInputStyle.Paragraph,
+    placeholder: 'Ex: Sei usar os comandos de mute, kick, ban, conheço bots de moderação...',
+    required: true,
+    maxLength: 500
+  },
+  {
+    id: 'cenario',
+    label: 'Como você reagiria se um membro estivesse desrespeitando as regras repetidamente?',
+    style: TextInputStyle.Paragraph,
+    placeholder: 'Descreva sua abordagem...',
+    required: true,
+    maxLength: 500
+  }
+];
+
+// ============================================================
+// ESTADOS DOS FORMULÁRIOS EM ANDAMENTO
+// ============================================================
+const formulariosPendentes = {};
+const formulariosEnviados = {}; // guarda respostas para referência ao aceitar/recusar (key: userId)
+
+// ============================================================
+// FUNÇÃO PARA ENVIAR O PAINEL DO FORMULÁRIO
+// ============================================================
+async function enviarPainelFormulario(guild) {
+  const config = lerConfig();
+  const canalId = config.canalFormulario;
+  if (!canalId) {
+    console.warn('[FORM] Canal do formulário não configurado. Use /formulario configurar.');
+    return;
+  }
+  const canal = await guild.channels.fetch(canalId).catch(() => null);
+  if (!canal) {
+    console.warn('[FORM] Canal configurado não encontrado.');
+    return;
+  }
+
+  // Apaga mensagens antigas do bot no canal
+  const msgs = await canal.messages.fetch({ limit: 20 }).catch(() => []);
+  const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
+  for (const [, msg] of botMsgs) {
+    try { await msg.delete(); } catch {}
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('📋 Formulário de Recrutamento – Staff')
+    .setDescription(
+      'Estamos procurando pessoas comprometidas, ativas e com vontade de ajudar a comunidade a crescer.\n\n' +
+      '**Requisitos básicos:**\n' +
+      '• Ser maior de 16 anos\n' +
+      '• Ter tempo disponível para atuar\n' +
+      '• Saber trabalhar em equipe\n' +
+      '• Respeitar as regras e os membros\n\n' +
+      'Clique no botão abaixo para iniciar o formulário. São poucas perguntas, mas seja sincero(a)!'
+    )
+    .setColor('Blue')
+    .setImage('https://i.imgur.com/tov858d.png') // pode trocar a imagem
+    .setFooter({ text: 'Skyland • Recrutamento' })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('formulario_iniciar')
+      .setLabel('📝 Preencher Formulário')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('📝')
+  );
+
+  await canal.send({ embeds: [embed], components: [row] });
+  console.log('[FORM] Painel de formulário enviado.');
+}
+
+// ============================================================
+// FUNÇÃO PARA ENVIAR MODAL COM PRÓXIMAS PERGUNTAS
+// ============================================================
+function enviarProximoModal(interaction, userId) {
+  const estado = formulariosPendentes[userId];
+  if (!estado) {
+    return interaction.reply({ content: '❌ Ocorreu um erro, reinicie o formulário.', flags: 64 });
+  }
+
+  const start = estado.etapa;
+  const perguntasRestantes = PERGUNTAS.slice(start);
+  if (perguntasRestantes.length === 0) {
+    return mostrarResumo(interaction, userId);
+  }
+
+  // Pega no máximo 5 perguntas
+  const perguntasModal = perguntasRestantes.slice(0, 5);
+  const modal = new ModalBuilder()
+    .setCustomId(`form_modal_${userId}`)
+    .setTitle(`Formulário - Etapa ${Math.floor(start / 5) + 1}`);
+
+  for (const pergunta of perguntasModal) {
+    const input = new TextInputBuilder()
+      .setCustomId(pergunta.id)
+      .setLabel(pergunta.label)
+      .setStyle(pergunta.style)
+      .setPlaceholder(pergunta.placeholder || '')
+      .setRequired(pergunta.required !== undefined ? pergunta.required : true);
+    if (pergunta.minLength) input.setMinLength(pergunta.minLength);
+    if (pergunta.maxLength) input.setMaxLength(pergunta.maxLength);
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+  }
+
+  interaction.showModal(modal);
+}
+
+// ============================================================
+// FUNÇÃO PARA MOSTRAR RESUMO E CONFIRMAÇÃO
+// ============================================================
+async function mostrarResumo(interaction, userId) {
+  const estado = formulariosPendentes[userId];
+  if (!estado) return interaction.reply({ content: '❌ Sessão expirada.', flags: 64 });
+
+  const respostas = estado.respostas;
+  let descricao = '';
+  for (const pergunta of PERGUNTAS) {
+    const resposta = respostas[pergunta.id] || '(não respondido)';
+    descricao += `**${pergunta.label}**\n${resposta}\n\n`;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('📋 Revisão do Formulário')
+    .setDescription(descricao)
+    .setColor('Yellow')
+    .setFooter({ text: 'Confirme ou cancele o envio.' })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('form_confirmar')
+      .setLabel('✅ Confirmar e Enviar')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('form_cancelar')
+      .setLabel('❌ Cancelar')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  await interaction.reply({ embeds: [embed], components: [row], flags: 64 });
+}
+
+// ============================================================
+// FUNÇÃO PARA ENVIAR AO WEBHOOK
+// ============================================================
+async function enviarAoWebhook(userId, respostas, guild) {
+  const config = lerConfig();
+  const webhookURL = config.webhookURL;
+  if (!webhookURL) {
+    console.error('[FORM] Webhook não configurado.');
+    return;
+  }
+
+  // Monta embed com as respostas
+  const embed = new EmbedBuilder()
+    .setTitle('📝 Nova Candidatura')
+    .setColor('Blue')
+    .setThumbnail(guild.iconURL())
+    .setTimestamp()
+    .setFooter({ text: `ID do candidato: ${userId}` });
+
+  for (const pergunta of PERGUNTAS) {
+    embed.addFields({ name: pergunta.label, value: respostas[pergunta.id] || 'Não informado', inline: false });
+  }
+
+  // Botões (customId contém userId)
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`form_aceitar_${userId}`)
+      .setLabel('✅ Aceitar')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`form_recusar_${userId}`)
+      .setLabel('❌ Recusar')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  try {
+    const webhookClient = new WebhookClient({ url: webhookURL });
+    await webhookClient.send({
+      embeds: [embed],
+      components: [row],
+      username: 'Formulário de Staff',
+      avatarURL: client.user.displayAvatarURL(),
+    });
+    console.log(`[FORM] Candidatura de ${userId} enviada ao webhook.`);
+  } catch (err) {
+    console.error('[FORM] Erro ao enviar webhook:', err);
+  }
+}
+
+// ============================================================
 // EVENTO READY
 // ============================================================
 client.once("ready", async () => {
@@ -365,7 +633,20 @@ client.once("ready", async () => {
     new SlashCommandBuilder().setName("painel-ticket").setDescription("[STAFF] Envia o painel de tickets no canal configurado"),
     new SlashCommandBuilder().setName("painel-avaliacao").setDescription("[STAFF] Envia o painel de avaliação de staff no canal configurado"),
     new SlashCommandBuilder().setName("fechar-ticket").setDescription("Fecha o ticket atual"),
-    new SlashCommandBuilder().setName("formulario").setDescription("[STAFF] Gerencia o formulário de recrutamento").addSubcommand(sub => sub.setName("ativar").setDescription("Ativa o formulário de staff em um canal específico (ou no atual)").addChannelOption(opt => opt.setName("canal").setDescription("Canal onde enviar o formulário (opcional)").setRequired(false).addChannelTypes(ChannelType.GuildText))),
+    // NOVO COMANDO FORMULÁRIO
+    new SlashCommandBuilder()
+      .setName("formulario")
+      .setDescription("Gerencia o formulário de recrutamento")
+      .addSubcommand(sub => 
+        sub.setName("configurar")
+          .setDescription("Define o canal e o webhook para o formulário")
+          .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde o painel será enviado").setRequired(true).addChannelTypes(ChannelType.GuildText))
+          .addStringOption(opt => opt.setName("webhook").setDescription("URL do webhook para receber as respostas").setRequired(true))
+      )
+      .addSubcommand(sub =>
+        sub.setName("enviar")
+          .setDescription("Envia o painel do formulário no canal configurado")
+      ),
     new SlashCommandBuilder().setName("deletar-canal").setDescription("[STAFF] Deleta um canal do servidor (texto ou voz)").addChannelOption(opt => opt.setName("canal").setDescription("Canal a ser deletado (se omitido, usa o canal atual)").setRequired(false)).addStringOption(opt => opt.setName("motivo").setDescription("Motivo da deleção (opcional)").setRequired(false)),
     // Giveaway
     new SlashCommandBuilder()
@@ -390,6 +671,8 @@ client.once("ready", async () => {
   if (guild) {
     await enviarPainelAvaliacao(guild);
     console.log("📌 Painel de avaliação enviado (se o canal existir).");
+    // Opcional: enviar painel do formulário automaticamente no ready
+    // await enviarPainelFormulario(guild);
   } else {
     console.warn("⚠️ Servidor não encontrado. Verifique o GUILD_ID.");
   }
@@ -531,7 +814,7 @@ client.on("messageCreate", async (message) => {
 client.on("interactionCreate", async (interaction) => {
   // ---- BOTÕES ----
   if (interaction.isButton()) {
-    // Botão "Dúvidas" do formulário
+    // Botão "Dúvidas" do formulário (antigo) – mantido
     if (interaction.customId === "formulario_duvidas") {
       const select = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -689,7 +972,6 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({ content: "❌ Este ticket expirou ou não existe mais.", ephemeral: true });
       }
       userChunks[channelId].chunks = chunks;
-      // Resetar timeout
       clearTimeout(userChunks[channelId].timeout);
       userChunks[channelId].timeout = setTimeout(() => {
         deleteChannel(channelId);
@@ -700,13 +982,12 @@ client.on("interactionCreate", async (interaction) => {
         ephemeral: false
       });
 
-      // Atualizar embed removendo botões
-      const embed = new EmbedBuilder()
-        .setColor(0xF5D742)
-        .setTitle('🧢 OFUSCADOR DO SEU ZÉ')
-        .setDescription(`**Fragmentos selecionados: ${chunks}**\n\nAgora envie seu código como **anexo .txt**.\n\n⚠️ O código será ofuscado e devolvido em um novo .txt.`)
-        .setFooter({ text: 'Seu código não é armazenado permanentemente.' });
       try {
+        const embed = new EmbedBuilder()
+          .setColor(0xF5D742)
+          .setTitle('🧢 OFUSCADOR DO SEU ZÉ')
+          .setDescription(`**Fragmentos selecionados: ${chunks}**\n\nAgora envie seu código como **anexo .txt**.\n\n⚠️ O código será ofuscado e devolvido em um novo .txt.`)
+          .setFooter({ text: 'Seu código não é armazenado permanentemente.' });
         await interaction.message.edit({ embeds: [embed], components: [] });
       } catch {}
     }
@@ -737,11 +1018,106 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "Este giveaway já foi encerrado.", flags: 64 });
     }
 
-    return;
+    // ========== NOVOS BOTÕES DO FORMULÁRIO ==========
+    // Botão: Iniciar formulário
+    if (interaction.customId === "formulario_iniciar") {
+      const userId = interaction.user.id;
+      if (formulariosPendentes[userId]) {
+        return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Termine ou cancele antes.", flags: 64 });
+      }
+
+      formulariosPendentes[userId] = {
+        respostas: {},
+        etapa: 0,
+        channelId: interaction.channel.id,
+      };
+
+      await enviarProximoModal(interaction, userId);
+    }
+
+    // Botão: Confirmar envio
+    if (interaction.customId === "form_confirmar") {
+      const userId = interaction.user.id;
+      const estado = formulariosPendentes[userId];
+      if (!estado) {
+        return interaction.reply({ content: "❌ Sessão expirada.", flags: 64 });
+      }
+
+      await enviarAoWebhook(userId, estado.respostas, interaction.guild);
+      formulariosEnviados[userId] = { respostas: estado.respostas, guildId: interaction.guild.id };
+
+      delete formulariosPendentes[userId];
+
+      await interaction.update({ content: "✅ Formulário enviado com sucesso! Aguarde a análise da equipe.", embeds: [], components: [] });
+    }
+
+    // Botão: Cancelar
+    if (interaction.customId === "form_cancelar") {
+      const userId = interaction.user.id;
+      delete formulariosPendentes[userId];
+      await interaction.update({ content: "❌ Formulário cancelado.", embeds: [], components: [] });
+    }
+
+    // Botões do webhook: Aceitar
+    if (interaction.customId.startsWith("form_aceitar_")) {
+      const userId = interaction.customId.split('_')[2];
+      const data = formulariosEnviados[userId];
+      if (!data) {
+        return interaction.reply({ content: "❌ Candidatura não encontrada ou já processada.", flags: 64 });
+      }
+
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Você não tem permissão para aceitar candidaturas.", flags: 64 });
+      }
+
+      const user = await client.users.fetch(userId).catch(() => null);
+      if (user) {
+        const embedAprovado = new EmbedBuilder()
+          .setTitle('🎉 Parabéns! Você foi aprovado!')
+          .setColor('Green')
+          .setDescription('Sua candidatura para staff foi **aceita**! Em breve você receberá mais instruções.\n\nAgradecemos o interesse em fazer parte da equipe!')
+          .setFooter({ text: `Aprovado por ${interaction.user.tag}` })
+          .setTimestamp();
+        await user.send({ embeds: [embedAprovado] }).catch(() => console.log(`[DM] Não foi possível enviar DM para ${user.tag}`));
+      }
+
+      delete formulariosEnviados[userId];
+      await interaction.reply({ content: `✅ Candidatura de <@${userId}> aprovada! DM enviada.`, flags: 64 });
+    }
+
+    // Botões do webhook: Recusar
+    if (interaction.customId.startsWith("form_recusar_")) {
+      const userId = interaction.customId.split('_')[2];
+      const data = formulariosEnviados[userId];
+      if (!data) {
+        return interaction.reply({ content: "❌ Candidatura não encontrada ou já processada.", flags: 64 });
+      }
+
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Você não tem permissão para recusar candidaturas.", flags: 64 });
+      }
+
+      const user = await client.users.fetch(userId).catch(() => null);
+      if (user) {
+        const embedReprovado = new EmbedBuilder()
+          .setTitle('😔 Obrigado pelo interesse!')
+          .setColor('Red')
+          .setDescription('Infelizmente, sua candidatura para staff não foi aprovada desta vez.\n\n**Não desanime!** Continue participando da comunidade e, no futuro, novas oportunidades podem surgir.\n\nAgradecemos sua disposição em ajudar!')
+          .setFooter({ text: `Recusado por ${interaction.user.tag}` })
+          .setTimestamp();
+        await user.send({ embeds: [embedReprovado] }).catch(() => console.log(`[DM] Não foi possível enviar DM para ${user.tag}`));
+      }
+
+      delete formulariosEnviados[userId];
+      await interaction.reply({ content: `❌ Candidatura de <@${userId}> recusada. DM enviada.`, flags: 64 });
+    }
+
+    return; // fim dos botões
   }
 
   // ---- MODAIS ----
   if (interaction.isModalSubmit()) {
+    // Modal de avaliação
     if (interaction.customId === "modal_avaliacao_staff") {
       const staffName = interaction.fields.getTextInputValue("staff_name_input");
       const comment = interaction.fields.getTextInputValue("comment_input");
@@ -766,6 +1142,35 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: "✅ Sua avaliação foi enviada com sucesso!", ephemeral: true });
       } else {
         await interaction.reply({ content: "❌ Não foi possível encontrar o canal de logs de avaliação.", ephemeral: true });
+      }
+      return;
+    }
+
+    // ---- MODAL DO FORMULÁRIO (submissão de respostas) ----
+    if (interaction.customId.startsWith("form_modal_")) {
+      const userId = interaction.user.id;
+      const estado = formulariosPendentes[userId];
+      if (!estado) {
+        return interaction.reply({ content: "❌ Sessão expirada. Inicie novamente clicando no botão.", flags: 64 });
+      }
+
+      const fields = interaction.fields;
+      const start = estado.etapa;
+      const perguntasModal = PERGUNTAS.slice(start, start + 5);
+      for (const pergunta of perguntasModal) {
+        const valor = fields.getTextInputValue(pergunta.id);
+        if (pergunta.required && (!valor || valor.trim() === '')) {
+          return interaction.reply({ content: `❌ O campo "${pergunta.label}" é obrigatório.`, flags: 64 });
+        }
+        estado.respostas[pergunta.id] = valor.trim();
+      }
+
+      estado.etapa += perguntasModal.length;
+
+      if (estado.etapa < PERGUNTAS.length) {
+        await enviarProximoModal(interaction, userId);
+      } else {
+        await mostrarResumo(interaction, userId);
       }
       return;
     }
@@ -826,7 +1231,7 @@ client.on("interactionCreate", async (interaction) => {
   // ---- COMANDOS SLASH ----
   if (!interaction.isChatInputCommand()) return;
 
-  // --- Comandos existentes (staff, utilitários) ---
+  // --- /say ---
   if (interaction.commandName === "say") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const texto = interaction.options.getString("mensagem");
@@ -835,11 +1240,13 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ content: "✅ Enviado!", flags: 64 });
   }
 
+  // --- /avatar ---
   if (interaction.commandName === "avatar") {
     const user = interaction.options.getUser("usuario") || interaction.user;
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle(`Avatar de ${user.username}`).setImage(user.displayAvatarURL({ size: 1024, extension: "png" })).setColor("Blue")] });
   }
 
+  // --- /video ---
   if (interaction.commandName === "video") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const link = interaction.options.getString("link");
@@ -857,7 +1264,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ content: "✅ Anúncio enviado!", flags: 64 });
   }
 
-  // ---- /ofuscar - NOVO SISTEMA DE TICKET ----
+  // --- /ofuscar ---
   if (interaction.commandName === "ofuscar") {
     await interaction.deferReply({ ephemeral: true });
 
@@ -873,7 +1280,7 @@ client.on("interactionCreate", async (interaction) => {
       const channel = await guild.channels.create({
         name: channelName,
         type: ChannelType.GuildText,
-        parent: CATEGORIA_TICKETS_ID, // usar a mesma categoria de tickets
+        parent: CATEGORIA_TICKETS_ID,
         permissionOverwrites: [
           { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
           { id: member.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles] },
@@ -881,21 +1288,18 @@ client.on("interactionCreate", async (interaction) => {
         ]
       });
 
-      // Armazenar dados do ticket de ofuscador
       userChunks[channel.id] = {
         userId: member.id,
-        chunks: 6, // padrão
+        chunks: 6,
         timeout: null,
         channel: channel
       };
 
-      // Timeout de inatividade
       const timeout = setTimeout(() => {
         deleteChannel(channel.id);
       }, INACTIVITY_TIMEOUT);
       userChunks[channel.id].timeout = timeout;
 
-      // Embed com botões de fragmentos
       const embed = new EmbedBuilder()
         .setColor(0xF5D742)
         .setTitle('🧢 OFUSCADOR DO SEU ZÉ')
@@ -923,7 +1327,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ---- /avaliar (sem moedas) ----
+  // --- /avaliar ---
   if (interaction.commandName === "avaliar") {
     const staff = interaction.options.getUser("staff");
     if (staff.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se avaliar!", flags: 64 });
@@ -943,7 +1347,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ embeds: [embed], components: [botoes], flags: 64 });
   }
 
-  // ---- /kick ----
+  // --- /kick ---
   if (interaction.commandName === "kick") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
@@ -961,7 +1365,7 @@ client.on("interactionCreate", async (interaction) => {
     } catch (err) { console.error("[ERRO KICK]", err); await interaction.reply({ content: "❌ Erro ao expulsar o usuário.", flags: 64 }); }
   }
 
-  // ---- /ban ----
+  // --- /ban ---
   if (interaction.commandName === "ban") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
@@ -978,7 +1382,7 @@ client.on("interactionCreate", async (interaction) => {
     } catch (err) { console.error("[ERRO BAN]", err); await interaction.reply({ content: "❌ Erro ao banir o usuário.", flags: 64 }); }
   }
 
-  // ---- /mute ----
+  // --- /mute ---
   if (interaction.commandName === "mute") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
@@ -998,57 +1402,62 @@ client.on("interactionCreate", async (interaction) => {
     } catch (err) { console.error("[ERRO MUTE]", err); await interaction.reply({ content: "❌ Erro ao mutar o usuário.", flags: 64 }); }
   }
 
-  // ---- /formulario ativar ----
+  // ---- /formulario (NOVO) ----
   if (interaction.commandName === "formulario") {
     const sub = interaction.options.getSubcommand();
-    if (sub === "ativar") {
+
+    if (sub === "configurar") {
       if (!temCargoMod(interaction.member)) {
-        return interaction.reply({ content: "❌ Apenas staff pode usar este comando.", flags: 64 });
+        return interaction.reply({ content: "❌ Apenas staff pode configurar o formulário.", flags: 64 });
       }
-      await interaction.deferReply({ flags: 64 });
-      const canalDestino = interaction.options.getChannel("canal") || interaction.channel;
-      if (canalDestino.type !== ChannelType.GuildText) {
-        return interaction.editReply({ content: "❌ O canal deve ser de texto." });
-      }
-      const embed = new EmbedBuilder()
-        .setTitle("📋 Formulário Skyland")
-        .setDescription(
-          "Preencha o formulário abaixo e faça parte da equipe!\n" +
-          "Buscamos pessoas comprometidas, ativas e que queiram ajudar a manter nossa comunidade organizada e em constante crescimento.\n\n" +
-          "**Requisitos:**\n" +
-          "• Ser ativo\n" +
-          "• Ter maturidade e responsabilidade\n" +
-          "• Saber trabalhar em equipe\n" +
-          "• Respeitar todos os membros\n" +
-          "• Seguir as regras do servidor\n\n" +
-          "Se tiver interesse, preencha o formulário e aguarde a análise da equipe. Boa sorte!"
-        )
-        .setColor("Blue")
-        .setImage("https://i.imgur.com/tov858d.png")
-        .setFooter({ text: "Skyland • Recrutamento" })
-        .setTimestamp();
+      const canal = interaction.options.getChannel("canal");
+      const webhook = interaction.options.getString("webhook");
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("formulario_link")
-          .setLabel("📝 Preencher Formulário")
-          .setStyle(ButtonStyle.Link)
-          .setURL("LINK_DO_FORMULARIO_AQUI"), // ⚠️ SUBSTITUA PELO LINK REAL
-        new ButtonBuilder()
-          .setCustomId("formulario_duvidas")
-          .setLabel("❓ Dúvidas")
-          .setStyle(ButtonStyle.Primary)
-      );
-
-      try {
-        await canalDestino.send({ embeds: [embed], components: [row] });
-        await interaction.editReply({ content: `✅ Formulário ativado com sucesso em ${canalDestino}!` });
-      } catch (err) {
-        console.error("[ERRO FORMULARIO]", err);
-        await interaction.editReply({ content: "❌ Erro ao enviar o formulário. Verifique se tenho permissão no canal e se o link é válido." });
+      if (!canal || !webhook) {
+        return interaction.reply({ content: "❌ Você precisa fornecer um canal e uma URL de webhook.", flags: 64 });
       }
+
+      if (!webhook.startsWith('https://discord.com/api/webhooks/')) {
+        return interaction.reply({ content: "❌ URL de webhook inválida. Deve começar com `https://discord.com/api/webhooks/`", flags: 64 });
+      }
+
+      const config = lerConfig();
+      config.canalFormulario = canal.id;
+      config.webhookURL = webhook;
+      salvarConfig(config);
+
+      await interaction.reply({ content: `✅ Configurações salvas!\nCanal: ${canal}\nWebhook: \`${webhook}\``, flags: 64 });
+    }
+
+    else if (sub === "enviar") {
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Apenas staff pode enviar o painel.", flags: 64 });
+      }
+      await enviarPainelFormulario(interaction.guild);
+      await interaction.reply({ content: "✅ Painel do formulário enviado no canal configurado!", flags: 64 });
     }
   }
+
+  // ---- /lockdown ----
+  if (interaction.commandName === "lockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const motivo = interaction.options.getString("motivo") || "Sem motivo especificado"; await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let fechados = 0; for (const [, canal] of canais) { if (canal.id === CANAL_AVISO_ID || !canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: false }); fechados++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) { await canalAviso.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: true }); await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔒 SERVIDOR EM LOCKDOWN").setColor("Red").setDescription(`O servidor foi bloqueado.\n\n**Motivo:** ${motivo}`).setTimestamp()] }); } await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Lockdown Ativado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Motivo", value: motivo }, { name: "Canais fechados", value: `${fechados}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown ativado! **${fechados}** canais fechados.`); }
+
+  if (interaction.commandName === "unlockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let abertos = 0; for (const [, canal] of canais) { if (!canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: true, ViewChannel: true }); abertos++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔓 LOCKDOWN ENCERRADO").setColor("Green").setDescription("O servidor foi reaberto! Podem falar normalmente.").setTimestamp()] }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Lockdown Desativado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canais abertos", value: `${abertos}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown desativado! **${abertos}** canais reabertos.`); }
+
+  if (interaction.commandName === "esconder-canal") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: false }); await interaction.reply({ content: `✅ Canal escondido!`, flags: 64 }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🙈 Canal Escondido").setColor("Grey").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui esconder.", flags: 64 }); } }
+
+  if (interaction.commandName === "mostrar-canal") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: true, SendMessages: true }); await interaction.reply({ content: `✅ Canal visível!`, flags: 64 }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("👁️ Canal Revelado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui mostrar.", flags: 64 }); } }
+
+  if (interaction.commandName === "lock") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const motivo = interaction.options.getString("motivo") || "Sem motivo"; try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: false }); await interaction.reply(`🔒 Canal bloqueado! **Motivo:** ${motivo}`); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Canal Bloqueado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }, { name: "Motivo", value: motivo }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui bloquear.", flags: 64 }); } }
+
+  if (interaction.commandName === "unlock") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: true }); await interaction.reply(`🔓 Canal desbloqueado!`); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Canal Desbloqueado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui desbloquear.", flags: 64 }); } }
+
+  if (interaction.commandName === "slowmode") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const segundos = interaction.options.getInteger("segundos"); try { await interaction.channel.setRateLimitPerUser(segundos); await interaction.reply(segundos === 0 ? `✅ Modo lento desativado!` : `🐢 Modo lento: **${segundos} segundos** entre mensagens.`); } catch { await interaction.reply({ content: "❌ Não consegui ativar modo lento.", flags: 64 }); } }
+
+  if (interaction.commandName === "painel-ticket") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await enviarPainelTicket(interaction.guild); await interaction.reply({ content: "✅ Painel de ticket enviado!", flags: 64 }); }
+
+  if (interaction.commandName === "painel-avaliacao") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await enviarPainelAvaliacao(interaction.guild); await interaction.reply({ content: "✅ Painel de avaliação enviado!", flags: 64 }); }
+
+  if (interaction.commandName === "fechar-ticket") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 }); const ticket = tickets[interaction.channel.id]; if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", flags: 64 }); await interaction.deferReply(); const mensagens = await interaction.channel.messages.fetch({ limit: 100 }); const transcript = mensagens.reverse().map((m) => `[${new Date(m.createdTimestamp).toLocaleString("pt-BR")}] ${m.author.tag}: ${m.content || "[anexo/embed]"}`).join("\n"); await enviarLogTicket(interaction.guild, new EmbedBuilder().setTitle("📋 Ticket Fechado").setColor("Red").addFields({ name: "Canal", value: interaction.channel.name }, { name: "Usuário", value: `<@${ticket.userId}>` }, { name: "Categoria", value: ticket.categoria }, { name: "Atendente", value: ticket.staffTag || "Não reivindicado" }, { name: "Fechado por", value: interaction.user.tag }).setTimestamp(), [{ attachment: Buffer.from(transcript, "utf-8"), name: `transcript-${interaction.channel.name}.txt` }]); const usuario = await client.users.fetch(ticket.userId).catch(() => null); if (usuario) await enviarAvaliacaoDM(usuario, ticket.staffTag || "Não identificado", ticket.categoria, interaction.guild); await interaction.editReply("✅ Ticket fechado! Canal será deletado em 5 segundos..."); delete tickets[interaction.channel.id]; setTimeout(async () => { try { await interaction.channel.delete(); } catch {} }, 5000); }
 
   // ---- /deletar-canal ----
   if (interaction.commandName === "deletar-canal") {
@@ -1242,27 +1651,6 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: `✅ Giveaway **${giveaway.prize}** foi encerrado manualmente.`, flags: 64 });
     }
   }
-
-  // ---- lockdown ----
-  if (interaction.commandName === "lockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const motivo = interaction.options.getString("motivo") || "Sem motivo especificado"; await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let fechados = 0; for (const [, canal] of canais) { if (canal.id === CANAL_AVISO_ID || !canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: false }); fechados++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) { await canalAviso.permissionOverwrites.edit(everyone, { SendMessages: false, ViewChannel: true }); await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔒 SERVIDOR EM LOCKDOWN").setColor("Red").setDescription(`O servidor foi bloqueado.\n\n**Motivo:** ${motivo}`).setTimestamp()] }); } await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Lockdown Ativado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Motivo", value: motivo }, { name: "Canais fechados", value: `${fechados}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown ativado! **${fechados}** canais fechados.`); }
-
-  if (interaction.commandName === "unlockdown") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await interaction.deferReply({ flags: 64 }); const canais = await interaction.guild.channels.fetch(); const everyone = interaction.guild.roles.everyone; let abertos = 0; for (const [, canal] of canais) { if (!canal.isTextBased()) continue; try { await canal.permissionOverwrites.edit(everyone, { SendMessages: true, ViewChannel: true }); abertos++; } catch {} } const canalAviso = await interaction.guild.channels.fetch(CANAL_AVISO_ID).catch(() => null); if (canalAviso) await canalAviso.send({ embeds: [new EmbedBuilder().setTitle("🔓 LOCKDOWN ENCERRADO").setColor("Green").setDescription("O servidor foi reaberto! Podem falar normalmente.").setTimestamp()] }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Lockdown Desativado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canais abertos", value: `${abertos}` }).setTimestamp()); await interaction.editReply(`✅ Lockdown desativado! **${abertos}** canais reabertos.`); }
-
-  if (interaction.commandName === "esconder-canal") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: false }); await interaction.reply({ content: `✅ Canal escondido!`, flags: 64 }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🙈 Canal Escondido").setColor("Grey").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui esconder.", flags: 64 }); } }
-
-  if (interaction.commandName === "mostrar-canal") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: true, SendMessages: true }); await interaction.reply({ content: `✅ Canal visível!`, flags: 64 }); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("👁️ Canal Revelado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui mostrar.", flags: 64 }); } }
-
-  if (interaction.commandName === "lock") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const motivo = interaction.options.getString("motivo") || "Sem motivo"; try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: false }); await interaction.reply(`🔒 Canal bloqueado! **Motivo:** ${motivo}`); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔒 Canal Bloqueado").setColor("Red").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }, { name: "Motivo", value: motivo }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui bloquear.", flags: 64 }); } }
-
-  if (interaction.commandName === "unlock") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); try { await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: true }); await interaction.reply(`🔓 Canal desbloqueado!`); await enviarLogMod(interaction.guild, new EmbedBuilder().setTitle("🔓 Canal Desbloqueado").setColor("Green").addFields({ name: "Admin", value: interaction.user.tag }, { name: "Canal", value: interaction.channel.name }).setTimestamp()); } catch { await interaction.reply({ content: "❌ Não consegui desbloquear.", flags: 64 }); } }
-
-  if (interaction.commandName === "slowmode") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); const segundos = interaction.options.getInteger("segundos"); try { await interaction.channel.setRateLimitPerUser(segundos); await interaction.reply(segundos === 0 ? `✅ Modo lento desativado!` : `🐢 Modo lento: **${segundos} segundos** entre mensagens.`); } catch { await interaction.reply({ content: "❌ Não consegui ativar modo lento.", flags: 64 }); } }
-
-  if (interaction.commandName === "painel-ticket") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await enviarPainelTicket(interaction.guild); await interaction.reply({ content: "✅ Painel de ticket enviado!", flags: 64 }); }
-
-  if (interaction.commandName === "painel-avaliacao") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 }); await enviarPainelAvaliacao(interaction.guild); await interaction.reply({ content: "✅ Painel de avaliação enviado!", flags: 64 }); }
-
-  if (interaction.commandName === "fechar-ticket") { if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 }); const ticket = tickets[interaction.channel.id]; if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", flags: 64 }); await interaction.deferReply(); const mensagens = await interaction.channel.messages.fetch({ limit: 100 }); const transcript = mensagens.reverse().map((m) => `[${new Date(m.createdTimestamp).toLocaleString("pt-BR")}] ${m.author.tag}: ${m.content || "[anexo/embed]"}`).join("\n"); await enviarLogTicket(interaction.guild, new EmbedBuilder().setTitle("📋 Ticket Fechado").setColor("Red").addFields({ name: "Canal", value: interaction.channel.name }, { name: "Usuário", value: `<@${ticket.userId}>` }, { name: "Categoria", value: ticket.categoria }, { name: "Atendente", value: ticket.staffTag || "Não reivindicado" }, { name: "Fechado por", value: interaction.user.tag }).setTimestamp(), [{ attachment: Buffer.from(transcript, "utf-8"), name: `transcript-${interaction.channel.name}.txt` }]); const usuario = await client.users.fetch(ticket.userId).catch(() => null); if (usuario) await enviarAvaliacaoDM(usuario, ticket.staffTag || "Não identificado", ticket.categoria, interaction.guild); await interaction.editReply("✅ Ticket fechado! Canal será deletado em 5 segundos..."); delete tickets[interaction.channel.id]; setTimeout(async () => { try { await interaction.channel.delete(); } catch {} }, 5000); }
 });
 
 // ============================================================
@@ -1319,13 +1707,11 @@ client.on("messageCreate", async (message) => {
   const data = userChunks[channelId];
   if (!data) return;
 
-  // Atualizar timeout
   clearTimeout(data.timeout);
   data.timeout = setTimeout(() => {
     deleteChannel(channelId);
   }, INACTIVITY_TIMEOUT);
 
-  // Verificar se é arquivo .txt
   if (message.attachments.size === 0) {
     return message.reply('📎 Por favor, envie um arquivo **.txt** com seu código.');
   }
@@ -1354,7 +1740,6 @@ client.on("messageCreate", async (message) => {
       files: [attachmentOfuscado]
     });
 
-    // Log do código cru
     const embedLog = new EmbedBuilder()
       .setColor("Red")
       .setTitle("📥 Código cru recebido para ofuscação")
@@ -1367,9 +1752,6 @@ client.on("messageCreate", async (message) => {
 
     const logAttachment = new AttachmentBuilder(Buffer.from(codigoCru, 'utf-8'), { name: `codigo_cru_${message.author.id}.txt` });
     await enviarLogOfuscador(message.guild, embedLog, [logAttachment]);
-
-    // Opcional: deletar canal após finalizar
-    // deleteChannel(channelId);
 
   } catch (error) {
     console.error('Erro ao processar arquivo de ofuscador:', error);
