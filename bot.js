@@ -473,40 +473,38 @@ async function enviarPainelFormulario(guild) {
 // FUNÇÃO PARA ENVIAR MODAL COM PRÓXIMAS PERGUNTAS (CORRIGIDA)
 // ============================================================
 async function enviarProximoModal(interaction, userId) {
-  try {
-    const estado = formulariosPendentes[userId];
-    if (!estado) {
-      return interaction.reply({ content: '❌ Ocorreu um erro, reinicie o formulário.', flags: 64 });
-    }
-
-    const start = estado.etapa;
-    const perguntasRestantes = PERGUNTAS.slice(start);
-    if (perguntasRestantes.length === 0) {
-      return mostrarResumo(interaction, userId);
-    }
-
-    const perguntasModal = perguntasRestantes.slice(0, 5);
-    const modal = new ModalBuilder()
-      .setCustomId(`form_modal_${userId}`)
-      .setTitle(`Formulário - Etapa ${Math.floor(start / 5) + 1}`);
-
-    for (const pergunta of perguntasModal) {
-      const input = new TextInputBuilder()
-        .setCustomId(pergunta.id)
-        .setLabel(pergunta.label)
-        .setStyle(pergunta.style)
-        .setPlaceholder(pergunta.placeholder || '')
-        .setRequired(pergunta.required !== undefined ? pergunta.required : true);
-      if (pergunta.minLength) input.setMinLength(pergunta.minLength);
-      if (pergunta.maxLength) input.setMaxLength(pergunta.maxLength);
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-    }
-
-    await interaction.showModal(modal);
-  } catch (error) {
-    console.error('[ERRO MODAL]', error);
-    await interaction.reply({ content: '❌ Ocorreu um erro ao abrir o formulário. Tente novamente.', flags: 64 });
+  const estado = formulariosPendentes[userId];
+  if (!estado) {
+    throw new Error('Estado do formulário não encontrado.');
   }
+
+  const start = estado.etapa;
+  const perguntasRestantes = PERGUNTAS.slice(start);
+  if (perguntasRestantes.length === 0) {
+    // Se não houver mais perguntas, mostra o resumo
+    await mostrarResumo(interaction, userId);
+    return;
+  }
+
+  const perguntasModal = perguntasRestantes.slice(0, 5);
+  const modal = new ModalBuilder()
+    .setCustomId(`form_modal_${userId}`)
+    .setTitle(`Formulário - Etapa ${Math.floor(start / 5) + 1}`);
+
+  for (const pergunta of perguntasModal) {
+    const input = new TextInputBuilder()
+      .setCustomId(pergunta.id)
+      .setLabel(pergunta.label)
+      .setStyle(pergunta.style)
+      .setPlaceholder(pergunta.placeholder || '')
+      .setRequired(pergunta.required !== undefined ? pergunta.required : true);
+    if (pergunta.minLength) input.setMinLength(pergunta.minLength);
+    if (pergunta.maxLength) input.setMaxLength(pergunta.maxLength);
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+  }
+
+  // Tenta mostrar o modal – se falhar, o erro será capturado pelo caller
+  await interaction.showModal(modal);
 }
 
 // ============================================================
@@ -621,7 +619,6 @@ client.once("ready", async () => {
     new SlashCommandBuilder().setName("painel-ticket").setDescription("[STAFF] Envia o painel de tickets no canal configurado"),
     new SlashCommandBuilder().setName("painel-avaliacao").setDescription("[STAFF] Envia o painel de avaliação de staff no canal configurado"),
     new SlashCommandBuilder().setName("fechar-ticket").setDescription("Fecha o ticket atual"),
-    // NOVO COMANDO FORMULÁRIO
     new SlashCommandBuilder()
       .setName("formulario")
       .setDescription("Gerencia o formulário de recrutamento")
@@ -636,7 +633,6 @@ client.once("ready", async () => {
           .setDescription("Envia o painel do formulário no canal configurado")
       ),
     new SlashCommandBuilder().setName("deletar-canal").setDescription("[STAFF] Deleta um canal do servidor (texto ou voz)").addChannelOption(opt => opt.setName("canal").setDescription("Canal a ser deletado (se omitido, usa o canal atual)").setRequired(false)).addStringOption(opt => opt.setName("motivo").setDescription("Motivo da deleção (opcional)").setRequired(false)),
-    // Giveaway
     new SlashCommandBuilder()
       .setName("giveaway")
       .setDescription("Sistema de giveaways")
@@ -1005,20 +1001,35 @@ client.on("interactionCreate", async (interaction) => {
 
     // ========== FORMULÁRIO: INICIAR ==========
     if (interaction.customId === "formulario_iniciar") {
+      const userId = interaction.user.id;
+
+      // Verifica se já existe um formulário pendente
+      if (formulariosPendentes[userId]) {
+        return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Termine ou cancele antes.", flags: 64 });
+      }
+
+      // Cria o estado ANTES de tentar abrir o modal
+      formulariosPendentes[userId] = {
+        respostas: {},
+        etapa: 0,
+        channelId: interaction.channel.id,
+        // Timeout para limpeza automática (5 minutos)
+        timeout: setTimeout(() => {
+          if (formulariosPendentes[userId]) {
+            console.log(`[FORM] Estado do usuário ${userId} removido por timeout.`);
+            delete formulariosPendentes[userId];
+          }
+        }, 5 * 60 * 1000)
+      };
+
       try {
-        const userId = interaction.user.id;
-        if (formulariosPendentes[userId]) {
-          return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Termine ou cancele antes.", flags: 64 });
-        }
-
-        formulariosPendentes[userId] = {
-          respostas: {},
-          etapa: 0,
-          channelId: interaction.channel.id,
-        };
-
         await enviarProximoModal(interaction, userId);
       } catch (error) {
+        // Se o modal falhar, remove o estado para não travar o usuário
+        if (formulariosPendentes[userId]?.timeout) {
+          clearTimeout(formulariosPendentes[userId].timeout);
+        }
+        delete formulariosPendentes[userId];
         console.error('[ERRO BOTÃO INICIAR]', error);
         await interaction.reply({ content: '❌ Erro ao iniciar o formulário. Tente novamente.', flags: 64 });
       }
@@ -1036,6 +1047,7 @@ client.on("interactionCreate", async (interaction) => {
         await enviarAoWebhook(userId, estado.respostas, interaction.guild);
         formulariosEnviados[userId] = { respostas: estado.respostas, guildId: interaction.guild.id };
 
+        if (estado.timeout) clearTimeout(estado.timeout);
         delete formulariosPendentes[userId];
 
         await interaction.update({ content: "✅ Formulário enviado com sucesso! Aguarde a análise da equipe.", embeds: [], components: [] });
@@ -1048,6 +1060,8 @@ client.on("interactionCreate", async (interaction) => {
     // ========== FORMULÁRIO: CANCELAR ==========
     if (interaction.customId === "form_cancelar") {
       const userId = interaction.user.id;
+      const estado = formulariosPendentes[userId];
+      if (estado?.timeout) clearTimeout(estado.timeout);
       delete formulariosPendentes[userId];
       await interaction.update({ content: "❌ Formulário cancelado.", embeds: [], components: [] });
     }
@@ -1147,6 +1161,17 @@ client.on("interactionCreate", async (interaction) => {
         const estado = formulariosPendentes[userId];
         if (!estado) {
           return interaction.reply({ content: "❌ Sessão expirada. Inicie novamente clicando no botão.", flags: 64 });
+        }
+
+        // Atualiza o timeout do estado
+        if (estado.timeout) {
+          clearTimeout(estado.timeout);
+          estado.timeout = setTimeout(() => {
+            if (formulariosPendentes[userId]) {
+              console.log(`[FORM] Estado do usuário ${userId} removido por timeout.`);
+              delete formulariosPendentes[userId];
+            }
+          }, 5 * 60 * 1000);
         }
 
         const fields = interaction.fields;
