@@ -32,7 +32,7 @@ const CARGO_SUPORTE_ID = "1513399309306036355";
 const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503";
-const CANAL_FORMULARIO_STAFF_ID = "1529652387361591428"; // Canal onde as respostas serão enviadas com botões
+const CANAL_FORMULARIO_STAFF_ID = "1529652387361591428"; // Canal onde as respostas do formulário são enviadas com botões
 
 const CARGOS_MODERACAO = ["1508405150572871720"];
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutos
@@ -642,6 +642,176 @@ async function enviarRespostaStaff(userId, respostas, guild) {
 }
 
 // ============================================================
+// SISTEMA DE GERENCIAMENTO DE WEBHOOKS (EXECUTORES)
+// ============================================================
+const EXECUTORES_PATH = path.join(__dirname, 'executores.json');
+
+function carregarExecutores() {
+  try {
+    const data = fs.readFileSync(EXECUTORES_PATH, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    const padrao = {
+      webhookURL: 'https://discord.com/api/webhooks/1519217665498021958/gV-6bHq1nGbnzvB0rPMXEAinzQAjLTaZtJvEm6IbXHCRrAnnx0vWE7jynpZcD6HqUkes',
+      avatarURL: 'https://cdn.discordapp.com/icons/1508302017980924064/4e99cb3869df3a62beb943e9d14861e7.png?size=2048',
+      executores: [
+        {
+          id: 'ronix',
+          nome: 'Ronix',
+          cor: '#e74c3c',
+          ativo: true,
+          thumbnail: 'https://cdn.discordapp.com/emojis/1509291842288746576.png?size=128',
+          campos: [
+            { name: 'Key-System', value: 'Sem key 🔑', inline: true },
+            { name: 'Crash ao injetar', value: 'Sim ⚠️', inline: true },
+            { name: 'Multi instance', value: 'Bugado ⚠️', inline: true },
+            { name: 'Download', value: '[📥 Ronix-Installer.exe](https://wrdcdn.net/r/154522/1776624538288/Ronix-Installer.exe)', inline: false }
+          ]
+        },
+        {
+          id: 'medium',
+          nome: 'Medium',
+          cor: '#e74c3c',
+          ativo: true,
+          thumbnail: 'https://cdn.discordapp.com/emojis/1509291686730404063.png?size=128',
+          campos: [
+            { name: 'Key-System', value: 'Sem key 🔑', inline: true },
+            { name: 'Crash', value: 'Sim ⚠️', inline: true },
+            { name: 'Execução de scripts', value: 'Bugado ⚠️', inline: true },
+            { name: 'Download', value: '[📥 Download](https://filerift.com/file/BEN2BKv00w)', inline: false }
+          ]
+        },
+        {
+          id: 'vortex',
+          nome: 'Vortex',
+          cor: '#e74c3c',
+          ativo: true,
+          thumbnail: 'https://cdn.discordapp.com/emojis/1515117448351977574.png?size=128',
+          campos: [
+            { name: 'Key-System', value: 'Possui key 🔑', inline: true },
+            { name: 'Crash', value: 'Sim ⚠️', inline: true },
+            { name: 'Download', value: '[📥 Download](https://gofile.io/d/4qiSvR)', inline: false }
+          ]
+        },
+        {
+          id: 'velocity',
+          nome: 'Velocity',
+          cor: '#e74c3c',
+          ativo: true,
+          thumbnail: 'https://cdn.discordapp.com/emojis/1509293220167815269.png?size=128',
+          campos: [
+            { name: 'Key-System', value: 'Possui key 🔑', inline: true },
+            { name: 'Crash', value: 'Sim ⚠️', inline: true },
+            { name: 'Multi instance', value: 'Bugado ⚠️', inline: true },
+            { name: 'Execução', value: 'Bug às vezes ⚠️', inline: true },
+            { name: 'Download', value: '[📥 Download](https://gofile.io/d/6HAQxH)', inline: false }
+          ]
+        }
+      ]
+    };
+    fs.writeFileSync(EXECUTORES_PATH, JSON.stringify(padrao, null, 2));
+    return padrao;
+  }
+}
+
+function salvarExecutores(data) {
+  fs.writeFileSync(EXECUTORES_PATH, JSON.stringify(data, null, 2));
+}
+
+async function enviarWebhookExecutores(guild) {
+  const config = carregarExecutores();
+  const { webhookURL, avatarURL, executores } = config;
+
+  if (!webhookURL) {
+    console.warn('[WEBHOOK] URL do webhook não configurada.');
+    return;
+  }
+
+  const embeds = executores
+    .filter(ex => ex.ativo)
+    .map(ex => {
+      const corHex = ex.cor ? parseInt(ex.cor.replace('#', ''), 16) : 0xe74c3c;
+      return {
+        title: ex.nome,
+        thumbnail: { url: ex.thumbnail || '' },
+        color: corHex,
+        fields: ex.campos || []
+      };
+    });
+
+  const payload = {
+    username: 'Executores PC • Script do Zé',
+    avatar_url: avatarURL || 'https://cdn.discordapp.com/icons/1508302017980924064/4e99cb3869df3a62beb943e9d14861e7.png?size=2048',
+    embeds: embeds
+  };
+
+  try {
+    const response = await fetch(webhookURL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      console.log('[WEBHOOK] Painel enviado com sucesso!');
+    } else {
+      console.error('[WEBHOOK] Erro ao enviar:', response.status, await response.text());
+    }
+  } catch (err) {
+    console.error('[WEBHOOK] Erro ao enviar:', err);
+  }
+}
+
+async function enviarPainelExecutores(interaction) {
+  const config = carregarExecutores();
+  const { executores } = config;
+
+  const embed = new EmbedBuilder()
+    .setTitle('📊 Painel de Executores')
+    .setDescription('Gerencie os executores que aparecem no webhook. Clique nos botões abaixo para ativar/desativar ou editar.')
+    .setColor('Blue')
+    .setTimestamp();
+
+  let desc = '';
+  for (const ex of executores) {
+    const status = ex.ativo ? '🟢 Ativo' : '🔴 Inativo';
+    desc += `**${ex.nome}** — ${status}\n`;
+  }
+  embed.setDescription(desc);
+
+  const rows = [];
+  for (const ex of executores) {
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(`exec_toggle_${ex.id}`)
+          .setLabel(ex.ativo ? '❌ Desativar' : '✅ Ativar')
+          .setStyle(ex.ativo ? ButtonStyle.Danger : ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`exec_edit_${ex.id}`)
+          .setLabel('✏️ Editar')
+          .setStyle(ButtonStyle.Secondary)
+      );
+    rows.push(row);
+  }
+
+  const sendRow = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId('exec_enviar_webhook')
+        .setLabel('📤 Enviar Webhook')
+        .setStyle(ButtonStyle.Primary)
+    );
+
+  rows.push(sendRow);
+
+  await interaction.editReply({
+    content: '✅ Painel carregado.',
+    embeds: [embed],
+    components: rows
+  });
+}
+
+// ============================================================
 // EVENTO READY
 // ============================================================
 client.once("ready", async () => {
@@ -687,6 +857,18 @@ client.once("ready", async () => {
       .addSubcommand(sub => sub.setName("reroll").setDescription("Sorteia novamente os vencedores de um giveaway encerrado").addStringOption(opt => opt.setName("mensagem_id").setDescription("ID da mensagem do giveaway").setRequired(true)))
       .addSubcommand(sub => sub.setName("listar").setDescription("Lista todos os giveaways ativos no servidor"))
       .addSubcommand(sub => sub.setName("encerrar").setDescription("Encerra um giveaway ativo manualmente").addStringOption(opt => opt.setName("mensagem_id").setDescription("ID da mensagem do giveaway").setRequired(true))),
+    // Novo comando para webhook de executores
+    new SlashCommandBuilder()
+      .setName("webhook")
+      .setDescription("[STAFF] Gerencia o webhook de executores")
+      .addSubcommand(sub => 
+        sub.setName("painel")
+          .setDescription("Abre o painel de gerenciamento de executores")
+      )
+      .addSubcommand(sub =>
+        sub.setName("enviar")
+          .setDescription("Reenvia o webhook com a configuração atual")
+      ),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -1195,6 +1377,94 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: `❌ Candidatura de <@${userId}> recusada. DM enviada.`, flags: 64 });
     }
 
+    // ========== WEBHOOK: TOGGLE EXECUTOR ==========
+    if (interaction.customId.startsWith('exec_toggle_')) {
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
+      }
+
+      const id = interaction.customId.replace('exec_toggle_', '');
+      const config = carregarExecutores();
+      const executor = config.executores.find(e => e.id === id);
+      if (!executor) {
+        return interaction.reply({ content: "❌ Executor não encontrado.", flags: 64 });
+      }
+
+      executor.ativo = !executor.ativo;
+      salvarExecutores(config);
+      await enviarWebhookExecutores(interaction.guild);
+
+      await interaction.update({ content: '✅ Status atualizado!', components: [] });
+      await enviarPainelExecutores(interaction);
+    }
+
+    // ========== WEBHOOK: EDITAR EXECUTOR ==========
+    if (interaction.customId.startsWith('exec_edit_')) {
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
+      }
+
+      const id = interaction.customId.replace('exec_edit_', '');
+      const config = carregarExecutores();
+      const executor = config.executores.find(e => e.id === id);
+      if (!executor) {
+        return interaction.reply({ content: "❌ Executor não encontrado.", flags: 64 });
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`exec_modal_${id}`)
+        .setTitle(`Editar ${executor.nome}`);
+
+      const nomeInput = new TextInputBuilder()
+        .setCustomId('exec_nome')
+        .setLabel('Nome do Executor')
+        .setStyle(TextInputStyle.Short)
+        .setValue(executor.nome)
+        .setRequired(true);
+
+      const corInput = new TextInputBuilder()
+        .setCustomId('exec_cor')
+        .setLabel('Cor (hex, ex: #e74c3c)')
+        .setStyle(TextInputStyle.Short)
+        .setValue(executor.cor || '#e74c3c')
+        .setRequired(true);
+
+      const thumbnailInput = new TextInputBuilder()
+        .setCustomId('exec_thumbnail')
+        .setLabel('URL do Thumbnail (imagem)')
+        .setStyle(TextInputStyle.Short)
+        .setValue(executor.thumbnail || '')
+        .setRequired(false);
+
+      const camposInput = new TextInputBuilder()
+        .setCustomId('exec_campos')
+        .setLabel('Campos (formato: Nome|Valor|inline)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setValue(executor.campos.map(c => `${c.name}|${c.value}|${c.inline}`).join('\n'))
+        .setRequired(true)
+        .setPlaceholder('Ex: Key-System|Sem key 🔑|true\nCrash|Sim ⚠️|true');
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(nomeInput),
+        new ActionRowBuilder().addComponents(corInput),
+        new ActionRowBuilder().addComponents(thumbnailInput),
+        new ActionRowBuilder().addComponents(camposInput)
+      );
+
+      await interaction.showModal(modal);
+    }
+
+    // ========== WEBHOOK: ENVIAR (botão) ==========
+    if (interaction.customId === 'exec_enviar_webhook') {
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
+      }
+
+      await interaction.reply({ content: '⏳ Enviando webhook...', flags: 64 });
+      await enviarWebhookExecutores(interaction.guild);
+      await interaction.editReply({ content: '✅ Webhook reenviado com sucesso!' });
+    }
+
     return; // fim dos botões
   }
 
@@ -1227,6 +1497,44 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: "❌ Não foi possível encontrar o canal de logs de avaliação.", ephemeral: true });
       }
       return;
+    }
+
+    // ========== WEBHOOK: MODAL DE EDIÇÃO ==========
+    if (interaction.customId.startsWith('exec_modal_')) {
+      if (!temCargoMod(interaction.member)) {
+        return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
+      }
+
+      const id = interaction.customId.replace('exec_modal_', '');
+      const config = carregarExecutores();
+      const executor = config.executores.find(e => e.id === id);
+      if (!executor) {
+        return interaction.reply({ content: "❌ Executor não encontrado.", flags: 64 });
+      }
+
+      const nome = interaction.fields.getTextInputValue('exec_nome');
+      const cor = interaction.fields.getTextInputValue('exec_cor');
+      const thumbnail = interaction.fields.getTextInputValue('exec_thumbnail');
+      const camposRaw = interaction.fields.getTextInputValue('exec_campos');
+
+      executor.nome = nome;
+      executor.cor = cor;
+      executor.thumbnail = thumbnail;
+
+      const linhas = camposRaw.split('\n').filter(line => line.trim());
+      executor.campos = linhas.map(line => {
+        const parts = line.split('|').map(s => s.trim());
+        return {
+          name: parts[0] || 'Campo',
+          value: parts[1] || 'Valor',
+          inline: parts[2] ? parts[2].toLowerCase() === 'true' : false
+        };
+      });
+
+      salvarExecutores(config);
+      await enviarWebhookExecutores(interaction.guild);
+
+      await interaction.reply({ content: '✅ Executor atualizado com sucesso!', flags: 64 });
     }
   }
 
@@ -1456,7 +1764,7 @@ client.on("interactionCreate", async (interaction) => {
     } catch (err) { console.error("[ERRO MUTE]", err); await interaction.reply({ content: "❌ Erro ao mutar o usuário.", flags: 64 }); }
   }
 
-  // ---- /formulario (NOVO) ----
+  // ---- /formulario ----
   if (interaction.commandName === "formulario") {
     const sub = interaction.options.getSubcommand();
 
@@ -1485,6 +1793,24 @@ client.on("interactionCreate", async (interaction) => {
       }
       await enviarPainelFormulario(interaction.guild);
       await interaction.reply({ content: "✅ Painel do formulário enviado no canal configurado!", flags: 64 });
+    }
+  }
+
+  // ---- /webhook ----
+  if (interaction.commandName === "webhook") {
+    const sub = interaction.options.getSubcommand();
+
+    if (!temCargoMod(interaction.member)) {
+      return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
+    }
+
+    if (sub === "painel") {
+      await interaction.reply({ content: "⏳ Carregando painel...", flags: 64 });
+      await enviarPainelExecutores(interaction);
+    } else if (sub === "enviar") {
+      await interaction.deferReply({ flags: 64 });
+      await enviarWebhookExecutores(interaction.guild);
+      await interaction.editReply({ content: "✅ Webhook reenviado com sucesso!" });
     }
   }
 
