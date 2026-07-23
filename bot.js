@@ -43,6 +43,8 @@ const tickets = {};
 const stickyMessages = {};
 const userChunks = {};
 const ticketTimeouts = {};
+const formulariosPendentes = {};
+const formulariosEnviados = {};
 
 // ============================================================
 // FUNÇÕES AUXILIARES
@@ -332,7 +334,7 @@ function lerConfig() {
     const data = fs.readFileSync(CONFIG_PATH, 'utf8');
     return JSON.parse(data);
   } catch {
-    return { canalFormulario: null, webhookURL: null };
+    return { canalFormulario: null, webhookURL: null, categoriaFormulario: null };
   }
 }
 
@@ -406,13 +408,7 @@ const PERGUNTAS = [
 ];
 
 // ============================================================
-// ESTADOS DOS FORMULÁRIOS EM ANDAMENTO
-// ============================================================
-const formulariosPendentes = {};
-const formulariosEnviados = {};
-
-// ============================================================
-// FUNÇÃO PARA ENVIAR O PAINEL DO FORMULÁRIO
+// FUNÇÃO PARA ENVIAR O PAINEL DO FORMULÁRIO (público)
 // ============================================================
 async function enviarPainelFormulario(guild) {
   const config = lerConfig();
@@ -442,7 +438,7 @@ async function enviarPainelFormulario(guild) {
       '• Ter tempo disponível para atuar\n' +
       '• Saber trabalhar em equipe\n' +
       '• Respeitar as regras e os membros\n\n' +
-      'Clique no botão abaixo para iniciar o formulário. São poucas perguntas, mas seja sincero(a)!'
+      'Clique no botão abaixo para iniciar o formulário. Você será levado para um canal privado.'
     )
     .setColor('Blue')
     .setImage('https://i.imgur.com/tov858d.png')
@@ -462,16 +458,84 @@ async function enviarPainelFormulario(guild) {
 }
 
 // ============================================================
-// FUNÇÃO PARA ENVIAR PRÓXIMA PERGUNTA (via mensagem)
+// FUNÇÃO PARA CRIAR CANAL PRIVADO E INICIAR FORMULÁRIO
 // ============================================================
-async function enviarProximaPergunta(interaction, userId) {
-  const estado = formulariosPendentes[userId];
+async function criarCanalFormulario(interaction, userId) {
+  const guild = interaction.guild;
+  const member = await guild.members.fetch(userId).catch(() => null);
+  if (!member) throw new Error('Usuário não encontrado.');
+
+  // Buscar categoria configurada (ou usar a de tickets)
+  const config = lerConfig();
+  let parentId = config.categoriaFormulario || CATEGORIA_TICKETS_ID;
+  const parent = await guild.channels.fetch(parentId).catch(() => null);
+  if (!parent) {
+    // Se não existir, tenta usar a primeira categoria disponível
+    const categories = guild.channels.cache.filter(c => c.type === ChannelType.GuildCategory);
+    parentId = categories.first()?.id || null;
+  }
+
+  const channelName = `form-${member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+  const channel = await guild.channels.create({
+    name: channelName,
+    type: ChannelType.GuildText,
+    parent: parentId,
+    permissionOverwrites: [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: userId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: CARGO_STAFF_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: CARGO_SUPORTE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
+    ]
+  });
+
+  // Salvar estado no canal
+  formulariosPendentes[channel.id] = {
+    userId: userId,
+    respostas: {},
+    etapa: 0,
+    canalId: channel.id,
+    mensagemId: null,
+    timeout: null
+  };
+
+  // Timeout de inatividade (5 min)
+  const timeout = setTimeout(async () => {
+    const estado = formulariosPendentes[channel.id];
+    if (estado) {
+      await channel.send(`⏰ ${member.user}, o formulário foi cancelado por inatividade.`);
+      delete formulariosPendentes[channel.id];
+      setTimeout(() => channel.delete().catch(() => {}), 3000);
+    }
+  }, INACTIVITY_TIMEOUT);
+  formulariosPendentes[channel.id].timeout = timeout;
+
+  // Envia mensagem de boas-vindas
+  const embedBoasVindas = new EmbedBuilder()
+    .setTitle('📋 Formulário de Recrutamento')
+    .setColor('Green')
+    .setDescription(`Olá ${member.user}! 👋\n\nVocê está em um canal privado para preencher o formulário.\nResponda às perguntas abaixo com calma.\n\n**Digite \`cancelar\` a qualquer momento para desistir.**`)
+    .setTimestamp();
+
+  await channel.send({ content: `<@${userId}>`, embeds: [embedBoasVindas] });
+
+  // Envia a primeira pergunta
+  await enviarProximaPergunta(channel, userId);
+
+  return channel;
+}
+
+// ============================================================
+// FUNÇÃO PARA ENVIAR PRÓXIMA PERGUNTA (no canal privado)
+// ============================================================
+async function enviarProximaPergunta(channel, userId) {
+  const estado = formulariosPendentes[channel.id];
   if (!estado) return;
 
   const etapa = estado.etapa;
   if (etapa >= PERGUNTAS.length) {
     // Todas as perguntas respondidas → mostrar resumo
-    await mostrarResumo(interaction, userId);
+    await mostrarResumo(channel, userId);
     return;
   }
 
@@ -479,38 +543,34 @@ async function enviarProximaPergunta(interaction, userId) {
   let texto = `**📝 Pergunta ${etapa + 1}/${PERGUNTAS.length}**\n\n`;
   texto += `**${pergunta.label}**\n`;
   if (pergunta.placeholder) texto += `\n*${pergunta.placeholder}*`;
-  texto += `\n\n✏️ **Digite sua resposta abaixo** (ou digite \`cancelar\` para desistir).`;
+  texto += `\n\n✏️ **Digite sua resposta abaixo.**`;
 
-  // Envia a pergunta
-  const mensagem = await interaction.channel.send({
-    content: `<@${userId}>`,
-    embeds: [
-      new EmbedBuilder()
-        .setColor('Blue')
-        .setDescription(texto)
-        .setFooter({ text: `Você tem 5 minutos para responder.` })
-        .setTimestamp()
-    ]
-  });
+  const embed = new EmbedBuilder()
+    .setColor('Blue')
+    .setDescription(texto)
+    .setFooter({ text: `Você tem 5 minutos para responder. Digite "cancelar" para desistir.` })
+    .setTimestamp();
 
-  // Salva o ID da mensagem para referência
-  estado.mensagemId = mensagem.id;
+  const msg = await channel.send({ content: `<@${userId}>`, embeds: [embed] });
+  estado.mensagemId = msg.id;
 
-  // Atualiza o timeout
+  // Atualiza timeout
   if (estado.timeout) clearTimeout(estado.timeout);
-  estado.timeout = setTimeout(() => {
-    if (formulariosPendentes[userId]) {
-      delete formulariosPendentes[userId];
-      interaction.channel.send(`⏰ ${interaction.user}, o formulário foi cancelado por inatividade.`);
+  estado.timeout = setTimeout(async () => {
+    const estadoAtual = formulariosPendentes[channel.id];
+    if (estadoAtual) {
+      await channel.send(`⏰ ${userId}, o formulário foi cancelado por inatividade.`);
+      delete formulariosPendentes[channel.id];
+      setTimeout(() => channel.delete().catch(() => {}), 3000);
     }
-  }, 5 * 60 * 1000);
+  }, INACTIVITY_TIMEOUT);
 }
 
 // ============================================================
-// FUNÇÃO PARA MOSTRAR RESUMO E CONFIRMAÇÃO (via mensagem)
+// FUNÇÃO PARA MOSTRAR RESUMO E CONFIRMAÇÃO (no canal privado)
 // ============================================================
-async function mostrarResumo(interaction, userId) {
-  const estado = formulariosPendentes[userId];
+async function mostrarResumo(channel, userId) {
+  const estado = formulariosPendentes[channel.id];
   if (!estado) return;
 
   const respostas = estado.respostas;
@@ -538,13 +598,12 @@ async function mostrarResumo(interaction, userId) {
       .setStyle(ButtonStyle.Danger)
   );
 
-  const msg = await interaction.channel.send({
+  const msg = await channel.send({
     content: `<@${userId}>`,
     embeds: [embed],
     components: [row]
   });
 
-  // Atualiza o estado com o ID da mensagem de resumo
   estado.mensagemId = msg.id;
 }
 
@@ -628,6 +687,7 @@ client.once("ready", async () => {
           .setDescription("Define o canal e o webhook para o formulário")
           .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde o painel será enviado").setRequired(true).addChannelTypes(ChannelType.GuildText))
           .addStringOption(opt => opt.setName("webhook").setDescription("URL do webhook para receber as respostas").setRequired(true))
+          .addChannelOption(opt => opt.setName("categoria").setDescription("Categoria onde os canais privados serão criados (opcional)").setRequired(false).addChannelTypes(ChannelType.GuildCategory))
       )
       .addSubcommand(sub =>
         sub.setName("enviar")
@@ -790,20 +850,20 @@ client.on("messageCreate", async (message) => {
   }
 
   // ============================================================
-  // CAPTURA DE RESPOSTAS DO FORMULÁRIO (via mensagem)
+  // CAPTURA DE RESPOSTAS DO FORMULÁRIO (canal privado)
   // ============================================================
-  const userId = message.author.id;
-  const estado = formulariosPendentes[userId];
+  const estado = formulariosPendentes[message.channel.id];
   if (!estado) return;
 
-  // Verifica se a mensagem é no mesmo canal onde o formulário foi iniciado
-  if (message.channel.id !== estado.canalId) return;
+  // Verifica se a mensagem é do usuário correto
+  if (message.author.id !== estado.userId) return;
 
   // Se o usuário digitar "cancelar", cancela o formulário
   if (message.content.toLowerCase() === 'cancelar') {
     if (estado.timeout) clearTimeout(estado.timeout);
-    delete formulariosPendentes[userId];
+    delete formulariosPendentes[message.channel.id];
     await message.reply('❌ Formulário cancelado.');
+    setTimeout(() => message.channel.delete().catch(() => {}), 2000);
     return;
   }
 
@@ -846,7 +906,7 @@ client.on("messageCreate", async (message) => {
   await new Promise(resolve => setTimeout(resolve, 500));
 
   // Envia a próxima pergunta (ou resumo)
-  await enviarProximaPergunta({ channel: message.channel, user: message.author }, userId);
+  await enviarProximaPergunta(message.channel, estado.userId);
 });
 
 // ============================================================
@@ -1059,67 +1119,62 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "Este giveaway já foi encerrado.", flags: 64 });
     }
 
-    // ========== FORMULÁRIO: INICIAR ==========
+    // ========== FORMULÁRIO: INICIAR (botão no painel público) ==========
     if (interaction.customId === "formulario_iniciar") {
       const userId = interaction.user.id;
 
-      if (formulariosPendentes[userId]) {
-        return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Termine ou cancele antes.", flags: 64 });
+      // Verifica se o usuário já tem um formulário em andamento
+      for (const [channelId, estado] of Object.entries(formulariosPendentes)) {
+        if (estado.userId === userId) {
+          return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Verifique seu canal privado.", flags: 64 });
+        }
       }
 
-      // Cria estado
-      formulariosPendentes[userId] = {
-        respostas: {},
-        etapa: 0,
-        canalId: interaction.channel.id,
-        mensagemId: null,
-        timeout: null
-      };
-
       try {
-        // Responde ao clique e já envia a primeira pergunta
-        await interaction.reply({ content: `✅ Formulário iniciado! Responda às perguntas no chat.`, flags: 64 });
-        await enviarProximaPergunta(interaction, userId);
+        await interaction.reply({ content: "✅ Criando seu canal privado... Aguarde.", flags: 64 });
+        const channel = await criarCanalFormulario(interaction, userId);
+        await interaction.editReply({ content: `✅ Canal criado: ${channel.toString()}` });
       } catch (error) {
-        if (formulariosPendentes[userId]?.timeout) clearTimeout(formulariosPendentes[userId].timeout);
-        delete formulariosPendentes[userId];
         console.error('[ERRO BOTÃO INICIAR]', error);
-        await interaction.reply({ content: '❌ Erro ao iniciar o formulário. Tente novamente.', flags: 64 });
+        await interaction.editReply({ content: '❌ Erro ao iniciar o formulário. Tente novamente.' });
       }
     }
 
-    // ========== FORMULÁRIO: CONFIRMAR ==========
+    // ========== FORMULÁRIO: CONFIRMAR (no canal privado) ==========
     if (interaction.customId === "form_confirmar") {
       try {
-        const userId = interaction.user.id;
-        const estado = formulariosPendentes[userId];
+        const estado = formulariosPendentes[interaction.channel.id];
         if (!estado) {
           return interaction.reply({ content: "❌ Sessão expirada.", flags: 64 });
         }
 
+        const userId = estado.userId;
         await enviarAoWebhook(userId, estado.respostas, interaction.guild);
         formulariosEnviados[userId] = { respostas: estado.respostas, guildId: interaction.guild.id };
 
         if (estado.timeout) clearTimeout(estado.timeout);
-        delete formulariosPendentes[userId];
+        delete formulariosPendentes[interaction.channel.id];
 
         await interaction.update({ content: "✅ Formulário enviado com sucesso! Aguarde a análise da equipe.", embeds: [], components: [] });
+
+        // Deleta o canal após 5 segundos
+        setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
       } catch (error) {
         console.error('[ERRO CONFIRMAR]', error);
         await interaction.reply({ content: '❌ Erro ao enviar o formulário. Tente novamente.', flags: 64 });
       }
     }
 
-    // ========== FORMULÁRIO: CANCELAR ==========
+    // ========== FORMULÁRIO: CANCELAR (no canal privado) ==========
     if (interaction.customId === "form_cancelar") {
-      const userId = interaction.user.id;
-      const estado = formulariosPendentes[userId];
+      const estado = formulariosPendentes[interaction.channel.id];
       if (estado?.timeout) clearTimeout(estado.timeout);
-      delete formulariosPendentes[userId];
+      delete formulariosPendentes[interaction.channel.id];
       await interaction.update({ content: "❌ Formulário cancelado.", embeds: [], components: [] });
+      setTimeout(() => interaction.channel.delete().catch(() => {}), 2000);
     }
 
-    // ========== FORMULÁRIO: ACEITAR ==========
+    // ========== FORMULÁRIO: ACEITAR (webhook) ==========
     if (interaction.customId.startsWith("form_aceitar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1146,7 +1201,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: `✅ Candidatura de <@${userId}> aprovada! DM enviada.`, flags: 64 });
     }
 
-    // ========== FORMULÁRIO: RECUSAR ==========
+    // ========== FORMULÁRIO: RECUSAR (webhook) ==========
     if (interaction.customId.startsWith("form_recusar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1444,6 +1499,7 @@ client.on("interactionCreate", async (interaction) => {
       }
       const canal = interaction.options.getChannel("canal");
       const webhook = interaction.options.getString("webhook");
+      const categoria = interaction.options.getChannel("categoria");
 
       if (!canal || !webhook) {
         return interaction.reply({ content: "❌ Você precisa fornecer um canal e uma URL de webhook.", flags: 64 });
@@ -1456,9 +1512,10 @@ client.on("interactionCreate", async (interaction) => {
       const config = lerConfig();
       config.canalFormulario = canal.id;
       config.webhookURL = webhook;
+      if (categoria) config.categoriaFormulario = categoria.id;
       salvarConfig(config);
 
-      await interaction.reply({ content: `✅ Configurações salvas!\nCanal: ${canal}\nWebhook: \`${webhook}\``, flags: 64 });
+      await interaction.reply({ content: `✅ Configurações salvas!\nCanal: ${canal}\nWebhook: \`${webhook}\`\nCategoria: ${categoria ? categoria.name : 'Usando padrão (tickets)'}`, flags: 64 });
     }
 
     else if (sub === "enviar") {
