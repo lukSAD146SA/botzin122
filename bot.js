@@ -32,13 +32,13 @@ const CARGO_SUPORTE_ID = "1513399309306036355";
 const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503";
-const CANAL_FORMULARIO_STAFF_ID = "1529652387361591428"; // Canal onde as respostas do formulário são enviadas com botões
+const CANAL_PAINEL_FIXO_ID = "1529916242843144312";
 
 const CARGOS_MODERACAO = ["1508405150572871720"];
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutos
 
 // ============================================================
-// DADOS EM MEMÓRIA (não persistentes)
+// DADOS EM MEMÓRIA
 // ============================================================
 const tickets = {};
 const stickyMessages = {};
@@ -46,6 +46,8 @@ const userChunks = {};
 const ticketTimeouts = {};
 const formulariosPendentes = {};
 const formulariosEnviados = {};
+const giveaways = {};
+const avaliacoesPendentes = {};
 
 // ============================================================
 // FUNÇÕES AUXILIARES
@@ -102,7 +104,7 @@ function formatarTempo(ms) {
 }
 
 // ============================================================
-// OFUSCADOR AVANÇADO
+// OFUSCADOR
 // ============================================================
 function ofuscar(codigo, numChunks) {
   if (!codigo || codigo.trim() === '') return '';
@@ -210,8 +212,6 @@ async function enviarPainelAvaliacao(guild) {
 // ============================================================
 // GIVEAWAY
 // ============================================================
-const giveaways = {};
-
 async function atualizarGiveaway(messageId) {
   const giveaway = giveaways[messageId];
   if (!giveaway || giveaway.ended) return;
@@ -326,9 +326,10 @@ function contemPalavraGrave(texto) {
 }
 
 // ============================================================
-// CONFIGURAÇÃO PERSISTENTE (formulário)
+// CONFIGURAÇÃO PERSISTENTE (formulário e webhooks)
 // ============================================================
 const CONFIG_PATH = path.join(__dirname, 'config.json');
+const EXECUTORES_PATH = path.join(__dirname, 'executores.json');
 
 function lerConfig() {
   try {
@@ -409,7 +410,259 @@ const PERGUNTAS = [
 ];
 
 // ============================================================
-// FUNÇÃO PARA ENVIAR O PAINEL DO FORMULÁRIO (público)
+// SISTEMA DE WEBHOOK (EXECUTORES)
+// ============================================================
+function carregarExecutores() {
+  try {
+    const data = fs.readFileSync(EXECUTORES_PATH, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    const padrao = {
+      webhookURL: 'https://discord.com/api/webhooks/1519217665498021958/gV-6bHq1nGbnzvB0rPMXEAinzQAjLTaZtJvEm6IbXHCRrAnnx0vWE7jynpZcD6HqUkes',
+      avatarURL: 'https://cdn.discordapp.com/icons/1508302017980924064/4e99cb3869df3a62beb943e9d14861e7.png?size=2048',
+      canalPainelFixo: CANAL_PAINEL_FIXO_ID,
+      executores: [
+        {
+          id: 'ronix',
+          nome: 'Ronix',
+          corAtivo: '#2ecc71',
+          corInativo: '#e74c3c',
+          ativo: true,
+          thumbnail: 'https://cdn.discordapp.com/emojis/1509291842288746576.png?size=128',
+          campos: [
+            { name: 'Key-System', value: 'Sem key 🔑', inline: true },
+            { name: 'Crash ao injetar', value: 'Sim ⚠️', inline: true },
+            { name: 'Multi instance', value: 'Bugado ⚠️', inline: true },
+            { name: 'Download', value: '[📥 Ronix-Installer.exe](https://wrdcdn.net/r/154522/1776624538288/Ronix-Installer.exe)', inline: false }
+          ]
+        },
+        {
+          id: 'medium',
+          nome: 'Medium',
+          corAtivo: '#2ecc71',
+          corInativo: '#e74c3c',
+          ativo: true,
+          thumbnail: 'https://cdn.discordapp.com/emojis/1509291686730404063.png?size=128',
+          campos: [
+            { name: 'Key-System', value: 'Sem key 🔑', inline: true },
+            { name: 'Crash', value: 'Sim ⚠️', inline: true },
+            { name: 'Execução de scripts', value: 'Bugado ⚠️', inline: true },
+            { name: 'Download', value: '[📥 Download](https://filerift.com/file/BEN2BKv00w)', inline: false }
+          ]
+        },
+        {
+          id: 'vortex',
+          nome: 'Vortex',
+          corAtivo: '#2ecc71',
+          corInativo: '#e74c3c',
+          ativo: true,
+          thumbnail: 'https://cdn.discordapp.com/emojis/1515117448351977574.png?size=128',
+          campos: [
+            { name: 'Key-System', value: 'Possui key 🔑', inline: true },
+            { name: 'Crash', value: 'Sim ⚠️', inline: true },
+            { name: 'Download', value: '[📥 Download](https://gofile.io/d/4qiSvR)', inline: false }
+          ]
+        },
+        {
+          id: 'velocity',
+          nome: 'Velocity',
+          corAtivo: '#2ecc71',
+          corInativo: '#e74c3c',
+          ativo: true,
+          thumbnail: 'https://cdn.discordapp.com/emojis/1509293220167815269.png?size=128',
+          campos: [
+            { name: 'Key-System', value: 'Possui key 🔑', inline: true },
+            { name: 'Crash', value: 'Sim ⚠️', inline: true },
+            { name: 'Multi instance', value: 'Bugado ⚠️', inline: true },
+            { name: 'Execução', value: 'Bug às vezes ⚠️', inline: true },
+            { name: 'Download', value: '[📥 Download](https://gofile.io/d/6HAQxH)', inline: false }
+          ]
+        }
+      ]
+    };
+    fs.writeFileSync(EXECUTORES_PATH, JSON.stringify(padrao, null, 2));
+    return padrao;
+  }
+}
+
+function salvarExecutores(data) {
+  fs.writeFileSync(EXECUTORES_PATH, JSON.stringify(data, null, 2));
+}
+
+async function enviarWebhookExecutores(guild) {
+  const config = carregarExecutores();
+  const { webhookURL, avatarURL, executores } = config;
+
+  if (!webhookURL) {
+    console.warn('[WEBHOOK] URL do webhook não configurada.');
+    return;
+  }
+
+  const embeds = executores.map(ex => {
+    const cor = ex.ativo ? ex.corAtivo || '#2ecc71' : ex.corInativo || '#e74c3c';
+    const corHex = parseInt(cor.replace('#', ''), 16);
+    const statusEmoji = ex.ativo ? '🟢' : '🔴';
+    return {
+      title: `${statusEmoji} ${ex.nome}`,
+      thumbnail: { url: ex.thumbnail || '' },
+      color: corHex,
+      fields: ex.campos || []
+    };
+  });
+
+  const payload = {
+    username: 'Executores PC • Script do Zé',
+    avatar_url: avatarURL || 'https://cdn.discordapp.com/icons/1508302017980924064/4e99cb3869df3a62beb943e9d14861e7.png?size=2048',
+    embeds: embeds
+  };
+
+  try {
+    const response = await fetch(webhookURL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      console.log('[WEBHOOK] Painel enviado com sucesso!');
+    } else {
+      console.error('[WEBHOOK] Erro ao enviar:', response.status, await response.text());
+    }
+  } catch (err) {
+    console.error('[WEBHOOK] Erro ao enviar:', err);
+  }
+}
+
+async function enviarPainelFixo(guild) {
+  const config = carregarExecutores();
+  const canalId = config.canalPainelFixo || CANAL_PAINEL_FIXO_ID;
+  const canal = await guild.channels.fetch(canalId).catch(() => null);
+  if (!canal) {
+    console.warn('[PAINEL FIXO] Canal não encontrado.');
+    return;
+  }
+
+  const msgs = await canal.messages.fetch({ limit: 10 }).catch(() => []);
+  const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
+  for (const [, msg] of botMsgs) {
+    try { await msg.delete(); } catch {}
+  }
+
+  const { executores } = config;
+
+  const embed = new EmbedBuilder()
+    .setTitle('📊 Painel de Executores')
+    .setDescription('Gerencie os executores que aparecem no webhook. Clique nos botões abaixo para ativar/desativar ou editar.')
+    .setColor('Blue')
+    .setTimestamp();
+
+  let desc = '';
+  for (const ex of executores) {
+    const status = ex.ativo ? '🟢 Ativo' : '🔴 Inativo';
+    desc += `**${ex.nome}** — ${status}\n`;
+  }
+  embed.setDescription(desc);
+
+  const rows = [];
+  for (const ex of executores) {
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(`exec_toggle_${ex.id}`)
+          .setLabel(ex.ativo ? '❌ Desativar' : '✅ Ativar')
+          .setStyle(ex.ativo ? ButtonStyle.Danger : ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`exec_edit_${ex.id}`)
+          .setLabel('✏️ Editar')
+          .setStyle(ButtonStyle.Secondary)
+      );
+    rows.push(row);
+  }
+
+  const sendRow = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId('exec_enviar_webhook')
+        .setLabel('📤 Enviar Webhook')
+        .setStyle(ButtonStyle.Primary)
+    );
+
+  rows.push(sendRow);
+
+  await canal.send({
+    content: '📌 **Painel Fixo de Gerenciamento**',
+    embeds: [embed],
+    components: rows
+  });
+
+  console.log('[PAINEL FIXO] Painel enviado/atualizado no canal', canal.name);
+}
+
+async function atualizarPainelFixo(guild) {
+  const config = carregarExecutores();
+  const canalId = config.canalPainelFixo || CANAL_PAINEL_FIXO_ID;
+  const canal = await guild.channels.fetch(canalId).catch(() => null);
+  if (!canal) return;
+
+  const msgs = await canal.messages.fetch({ limit: 5 }).catch(() => []);
+  const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
+  if (botMsgs.length === 0) {
+    await enviarPainelFixo(guild);
+    return;
+  }
+
+  const msg = botMsgs.first();
+  const { executores } = config;
+
+  const embed = new EmbedBuilder()
+    .setTitle('📊 Painel de Executores')
+    .setDescription('Gerencie os executores que aparecem no webhook. Clique nos botões abaixo para ativar/desativar ou editar.')
+    .setColor('Blue')
+    .setTimestamp();
+
+  let desc = '';
+  for (const ex of executores) {
+    const status = ex.ativo ? '🟢 Ativo' : '🔴 Inativo';
+    desc += `**${ex.nome}** — ${status}\n`;
+  }
+  embed.setDescription(desc);
+
+  const rows = [];
+  for (const ex of executores) {
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(`exec_toggle_${ex.id}`)
+          .setLabel(ex.ativo ? '❌ Desativar' : '✅ Ativar')
+          .setStyle(ex.ativo ? ButtonStyle.Danger : ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`exec_edit_${ex.id}`)
+          .setLabel('✏️ Editar')
+          .setStyle(ButtonStyle.Secondary)
+      );
+    rows.push(row);
+  }
+
+  const sendRow = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId('exec_enviar_webhook')
+        .setLabel('📤 Enviar Webhook')
+        .setStyle(ButtonStyle.Primary)
+    );
+
+  rows.push(sendRow);
+
+  await msg.edit({
+    content: '📌 **Painel Fixo de Gerenciamento**',
+    embeds: [embed],
+    components: rows
+  });
+
+  console.log('[PAINEL FIXO] Painel atualizado.');
+}
+
+// ============================================================
+// FUNÇÕES DO FORMULÁRIO
 // ============================================================
 async function enviarPainelFormulario(guild) {
   const config = lerConfig();
@@ -458,9 +711,6 @@ async function enviarPainelFormulario(guild) {
   console.log('[FORM] Painel de formulário enviado.');
 }
 
-// ============================================================
-// FUNÇÃO PARA CRIAR CANAL PRIVADO E INICIAR FORMULÁRIO
-// ============================================================
 async function criarCanalFormulario(interaction, userId) {
   const guild = interaction.guild;
   const member = await guild.members.fetch(userId).catch(() => null);
@@ -514,15 +764,10 @@ async function criarCanalFormulario(interaction, userId) {
     .setTimestamp();
 
   await channel.send({ content: `<@${userId}>`, embeds: [embedBoasVindas] });
-
   await enviarProximaPergunta(channel, userId);
-
   return channel;
 }
 
-// ============================================================
-// FUNÇÃO PARA ENVIAR PRÓXIMA PERGUNTA (no canal privado)
-// ============================================================
 async function enviarProximaPergunta(channel, userId) {
   const estado = formulariosPendentes[channel.id];
   if (!estado) return;
@@ -559,9 +804,6 @@ async function enviarProximaPergunta(channel, userId) {
   }, INACTIVITY_TIMEOUT);
 }
 
-// ============================================================
-// FUNÇÃO PARA MOSTRAR RESUMO E CONFIRMAÇÃO (no canal privado)
-// ============================================================
 async function mostrarResumo(channel, userId) {
   const estado = formulariosPendentes[channel.id];
   if (!estado) return;
@@ -600,11 +842,8 @@ async function mostrarResumo(channel, userId) {
   estado.mensagemId = msg.id;
 }
 
-// ============================================================
-// FUNÇÃO PARA ENVIAR RESPOSTA AO CANAL STAFF (sem webhook)
-// ============================================================
 async function enviarRespostaStaff(userId, respostas, guild) {
-  const canalStaff = await guild.channels.fetch(CANAL_FORMULARIO_STAFF_ID).catch(() => null);
+  const canalStaff = await guild.channels.fetch('1529652387361591428').catch(() => null);
   if (!canalStaff) {
     console.error('[FORM] Canal staff não encontrado.');
     return;
@@ -639,176 +878,6 @@ async function enviarRespostaStaff(userId, respostas, guild) {
   });
 
   console.log(`[FORM] Candidatura de ${userId} enviada ao canal staff.`);
-}
-
-// ============================================================
-// SISTEMA DE GERENCIAMENTO DE WEBHOOKS (EXECUTORES)
-// ============================================================
-const EXECUTORES_PATH = path.join(__dirname, 'executores.json');
-
-function carregarExecutores() {
-  try {
-    const data = fs.readFileSync(EXECUTORES_PATH, 'utf8');
-    return JSON.parse(data);
-  } catch {
-    const padrao = {
-      webhookURL: 'https://discord.com/api/webhooks/1519217665498021958/gV-6bHq1nGbnzvB0rPMXEAinzQAjLTaZtJvEm6IbXHCRrAnnx0vWE7jynpZcD6HqUkes',
-      avatarURL: 'https://cdn.discordapp.com/icons/1508302017980924064/4e99cb3869df3a62beb943e9d14861e7.png?size=2048',
-      executores: [
-        {
-          id: 'ronix',
-          nome: 'Ronix',
-          cor: '#e74c3c',
-          ativo: true,
-          thumbnail: 'https://cdn.discordapp.com/emojis/1509291842288746576.png?size=128',
-          campos: [
-            { name: 'Key-System', value: 'Sem key 🔑', inline: true },
-            { name: 'Crash ao injetar', value: 'Sim ⚠️', inline: true },
-            { name: 'Multi instance', value: 'Bugado ⚠️', inline: true },
-            { name: 'Download', value: '[📥 Ronix-Installer.exe](https://wrdcdn.net/r/154522/1776624538288/Ronix-Installer.exe)', inline: false }
-          ]
-        },
-        {
-          id: 'medium',
-          nome: 'Medium',
-          cor: '#e74c3c',
-          ativo: true,
-          thumbnail: 'https://cdn.discordapp.com/emojis/1509291686730404063.png?size=128',
-          campos: [
-            { name: 'Key-System', value: 'Sem key 🔑', inline: true },
-            { name: 'Crash', value: 'Sim ⚠️', inline: true },
-            { name: 'Execução de scripts', value: 'Bugado ⚠️', inline: true },
-            { name: 'Download', value: '[📥 Download](https://filerift.com/file/BEN2BKv00w)', inline: false }
-          ]
-        },
-        {
-          id: 'vortex',
-          nome: 'Vortex',
-          cor: '#e74c3c',
-          ativo: true,
-          thumbnail: 'https://cdn.discordapp.com/emojis/1515117448351977574.png?size=128',
-          campos: [
-            { name: 'Key-System', value: 'Possui key 🔑', inline: true },
-            { name: 'Crash', value: 'Sim ⚠️', inline: true },
-            { name: 'Download', value: '[📥 Download](https://gofile.io/d/4qiSvR)', inline: false }
-          ]
-        },
-        {
-          id: 'velocity',
-          nome: 'Velocity',
-          cor: '#e74c3c',
-          ativo: true,
-          thumbnail: 'https://cdn.discordapp.com/emojis/1509293220167815269.png?size=128',
-          campos: [
-            { name: 'Key-System', value: 'Possui key 🔑', inline: true },
-            { name: 'Crash', value: 'Sim ⚠️', inline: true },
-            { name: 'Multi instance', value: 'Bugado ⚠️', inline: true },
-            { name: 'Execução', value: 'Bug às vezes ⚠️', inline: true },
-            { name: 'Download', value: '[📥 Download](https://gofile.io/d/6HAQxH)', inline: false }
-          ]
-        }
-      ]
-    };
-    fs.writeFileSync(EXECUTORES_PATH, JSON.stringify(padrao, null, 2));
-    return padrao;
-  }
-}
-
-function salvarExecutores(data) {
-  fs.writeFileSync(EXECUTORES_PATH, JSON.stringify(data, null, 2));
-}
-
-async function enviarWebhookExecutores(guild) {
-  const config = carregarExecutores();
-  const { webhookURL, avatarURL, executores } = config;
-
-  if (!webhookURL) {
-    console.warn('[WEBHOOK] URL do webhook não configurada.');
-    return;
-  }
-
-  const embeds = executores
-    .filter(ex => ex.ativo)
-    .map(ex => {
-      const corHex = ex.cor ? parseInt(ex.cor.replace('#', ''), 16) : 0xe74c3c;
-      return {
-        title: ex.nome,
-        thumbnail: { url: ex.thumbnail || '' },
-        color: corHex,
-        fields: ex.campos || []
-      };
-    });
-
-  const payload = {
-    username: 'Executores PC • Script do Zé',
-    avatar_url: avatarURL || 'https://cdn.discordapp.com/icons/1508302017980924064/4e99cb3869df3a62beb943e9d14861e7.png?size=2048',
-    embeds: embeds
-  };
-
-  try {
-    const response = await fetch(webhookURL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (response.ok) {
-      console.log('[WEBHOOK] Painel enviado com sucesso!');
-    } else {
-      console.error('[WEBHOOK] Erro ao enviar:', response.status, await response.text());
-    }
-  } catch (err) {
-    console.error('[WEBHOOK] Erro ao enviar:', err);
-  }
-}
-
-async function enviarPainelExecutores(interaction) {
-  const config = carregarExecutores();
-  const { executores } = config;
-
-  const embed = new EmbedBuilder()
-    .setTitle('📊 Painel de Executores')
-    .setDescription('Gerencie os executores que aparecem no webhook. Clique nos botões abaixo para ativar/desativar ou editar.')
-    .setColor('Blue')
-    .setTimestamp();
-
-  let desc = '';
-  for (const ex of executores) {
-    const status = ex.ativo ? '🟢 Ativo' : '🔴 Inativo';
-    desc += `**${ex.nome}** — ${status}\n`;
-  }
-  embed.setDescription(desc);
-
-  const rows = [];
-  for (const ex of executores) {
-    const row = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(`exec_toggle_${ex.id}`)
-          .setLabel(ex.ativo ? '❌ Desativar' : '✅ Ativar')
-          .setStyle(ex.ativo ? ButtonStyle.Danger : ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`exec_edit_${ex.id}`)
-          .setLabel('✏️ Editar')
-          .setStyle(ButtonStyle.Secondary)
-      );
-    rows.push(row);
-  }
-
-  const sendRow = new ActionRowBuilder()
-    .addComponents(
-      new ButtonBuilder()
-        .setCustomId('exec_enviar_webhook')
-        .setLabel('📤 Enviar Webhook')
-        .setStyle(ButtonStyle.Primary)
-    );
-
-  rows.push(sendRow);
-
-  await interaction.editReply({
-    content: '✅ Painel carregado.',
-    embeds: [embed],
-    components: rows
-  });
 }
 
 // ============================================================
@@ -857,17 +926,26 @@ client.once("ready", async () => {
       .addSubcommand(sub => sub.setName("reroll").setDescription("Sorteia novamente os vencedores de um giveaway encerrado").addStringOption(opt => opt.setName("mensagem_id").setDescription("ID da mensagem do giveaway").setRequired(true)))
       .addSubcommand(sub => sub.setName("listar").setDescription("Lista todos os giveaways ativos no servidor"))
       .addSubcommand(sub => sub.setName("encerrar").setDescription("Encerra um giveaway ativo manualmente").addStringOption(opt => opt.setName("mensagem_id").setDescription("ID da mensagem do giveaway").setRequired(true))),
-    // Novo comando para webhook de executores
     new SlashCommandBuilder()
       .setName("webhook")
       .setDescription("[STAFF] Gerencia o webhook de executores")
       .addSubcommand(sub => 
         sub.setName("painel")
-          .setDescription("Abre o painel de gerenciamento de executores")
+          .setDescription("Envia o painel fixo no canal configurado")
       )
       .addSubcommand(sub =>
         sub.setName("enviar")
           .setDescription("Reenvia o webhook com a configuração atual")
+      )
+      .addSubcommand(sub =>
+        sub.setName("configurar")
+          .setDescription("Configura o canal do painel fixo")
+          .addChannelOption(opt => 
+            opt.setName("canal")
+              .setDescription("Canal onde o painel fixo será enviado")
+              .setRequired(true)
+              .addChannelTypes(ChannelType.GuildText)
+          )
       ),
   ];
 
@@ -883,6 +961,8 @@ client.once("ready", async () => {
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
     await enviarPainelAvaliacao(guild);
+    await enviarPainelFixo(guild);
+    console.log("[PAINEL FIXO] Painel fixo enviado no ready.");
     console.log("📌 Painel de avaliação enviado (se o canal existir).");
   } else {
     console.warn("⚠️ Servidor não encontrado. Verifique o GUILD_ID.");
@@ -898,7 +978,7 @@ client.once("ready", async () => {
 });
 
 // ============================================================
-// EVENTO DE MENSAGENS (sticky, flood, etc.)
+// EVENTO DE MENSAGENS
 // ============================================================
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
@@ -1018,7 +1098,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // ============================================================
-  // CAPTURA DE RESPOSTAS DO FORMULÁRIO (canal privado)
+  // CAPTURA DE RESPOSTAS DO FORMULÁRIO
   // ============================================================
   const estado = formulariosPendentes[message.channel.id];
   if (!estado) return;
@@ -1270,7 +1350,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "Este giveaway já foi encerrado.", flags: 64 });
     }
 
-    // ========== FORMULÁRIO: INICIAR (botão no painel público) ==========
+    // ========== FORMULÁRIO: INICIAR ==========
     if (interaction.customId === "formulario_iniciar") {
       const userId = interaction.user.id;
 
@@ -1290,7 +1370,7 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    // ========== FORMULÁRIO: CONFIRMAR (no canal privado) ==========
+    // ========== FORMULÁRIO: CONFIRMAR ==========
     if (interaction.customId === "form_confirmar") {
       try {
         const estado = formulariosPendentes[interaction.channel.id];
@@ -1314,7 +1394,7 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    // ========== FORMULÁRIO: CANCELAR (no canal privado) ==========
+    // ========== FORMULÁRIO: CANCELAR ==========
     if (interaction.customId === "form_cancelar") {
       const estado = formulariosPendentes[interaction.channel.id];
       if (estado?.timeout) clearTimeout(estado.timeout);
@@ -1323,7 +1403,7 @@ client.on("interactionCreate", async (interaction) => {
       setTimeout(() => interaction.channel.delete().catch(() => {}), 2000);
     }
 
-    // ========== FORMULÁRIO: ACEITAR STAFF (botão no canal staff) ==========
+    // ========== FORMULÁRIO: ACEITAR STAFF ==========
     if (interaction.customId.startsWith("form_aceitar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1350,7 +1430,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: `✅ Candidatura de <@${userId}> aprovada! DM enviada.`, flags: 64 });
     }
 
-    // ========== FORMULÁRIO: RECUSAR STAFF (botão no canal staff) ==========
+    // ========== FORMULÁRIO: RECUSAR STAFF ==========
     if (interaction.customId.startsWith("form_recusar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1392,10 +1472,11 @@ client.on("interactionCreate", async (interaction) => {
 
       executor.ativo = !executor.ativo;
       salvarExecutores(config);
-      await enviarWebhookExecutores(interaction.guild);
 
-      await interaction.update({ content: '✅ Status atualizado!', components: [] });
-      await enviarPainelExecutores(interaction);
+      await enviarWebhookExecutores(interaction.guild);
+      await atualizarPainelFixo(interaction.guild);
+
+      await interaction.reply({ content: `✅ ${executor.nome} agora está ${executor.ativo ? 'ATIVO' : 'INATIVO'}!`, flags: 64 });
     }
 
     // ========== WEBHOOK: EDITAR EXECUTOR ==========
@@ -1422,16 +1503,23 @@ client.on("interactionCreate", async (interaction) => {
         .setValue(executor.nome)
         .setRequired(true);
 
-      const corInput = new TextInputBuilder()
-        .setCustomId('exec_cor')
-        .setLabel('Cor (hex, ex: #e74c3c)')
+      const corAtivoInput = new TextInputBuilder()
+        .setCustomId('exec_corAtivo')
+        .setLabel('Cor (ativo) - hex ex: #2ecc71')
         .setStyle(TextInputStyle.Short)
-        .setValue(executor.cor || '#e74c3c')
+        .setValue(executor.corAtivo || '#2ecc71')
+        .setRequired(true);
+
+      const corInativoInput = new TextInputBuilder()
+        .setCustomId('exec_corInativo')
+        .setLabel('Cor (inativo) - hex ex: #e74c3c')
+        .setStyle(TextInputStyle.Short)
+        .setValue(executor.corInativo || '#e74c3c')
         .setRequired(true);
 
       const thumbnailInput = new TextInputBuilder()
         .setCustomId('exec_thumbnail')
-        .setLabel('URL do Thumbnail (imagem)')
+        .setLabel('URL do Thumbnail')
         .setStyle(TextInputStyle.Short)
         .setValue(executor.thumbnail || '')
         .setRequired(false);
@@ -1446,7 +1534,8 @@ client.on("interactionCreate", async (interaction) => {
 
       modal.addComponents(
         new ActionRowBuilder().addComponents(nomeInput),
-        new ActionRowBuilder().addComponents(corInput),
+        new ActionRowBuilder().addComponents(corAtivoInput),
+        new ActionRowBuilder().addComponents(corInativoInput),
         new ActionRowBuilder().addComponents(thumbnailInput),
         new ActionRowBuilder().addComponents(camposInput)
       );
@@ -1513,12 +1602,14 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const nome = interaction.fields.getTextInputValue('exec_nome');
-      const cor = interaction.fields.getTextInputValue('exec_cor');
+      const corAtivo = interaction.fields.getTextInputValue('exec_corAtivo');
+      const corInativo = interaction.fields.getTextInputValue('exec_corInativo');
       const thumbnail = interaction.fields.getTextInputValue('exec_thumbnail');
       const camposRaw = interaction.fields.getTextInputValue('exec_campos');
 
       executor.nome = nome;
-      executor.cor = cor;
+      executor.corAtivo = corAtivo;
+      executor.corInativo = corInativo;
       executor.thumbnail = thumbnail;
 
       const linhas = camposRaw.split('\n').filter(line => line.trim());
@@ -1533,8 +1624,9 @@ client.on("interactionCreate", async (interaction) => {
 
       salvarExecutores(config);
       await enviarWebhookExecutores(interaction.guild);
+      await atualizarPainelFixo(interaction.guild);
 
-      await interaction.reply({ content: '✅ Executor atualizado com sucesso!', flags: 64 });
+      await interaction.reply({ content: `✅ ${executor.nome} atualizado com sucesso!`, flags: 64 });
     }
   }
 
@@ -1784,7 +1876,7 @@ client.on("interactionCreate", async (interaction) => {
       if (categoria) config.categoriaFormulario = categoria.id;
       salvarConfig(config);
 
-      await interaction.reply({ content: `✅ Configurações salvas!\nCanal público: ${canal}\nCategoria: ${categoria ? categoria.name : 'Usando padrão (tickets)'}\n\n📌 As respostas serão enviadas no canal <#${CANAL_FORMULARIO_STAFF_ID}> com botões de aceitar/recusar.`, flags: 64 });
+      await interaction.reply({ content: `✅ Configurações salvas!\nCanal público: ${canal}\nCategoria: ${categoria ? categoria.name : 'Usando padrão (tickets)'}\n\n📌 As respostas serão enviadas no canal <#1529652387361591428> com botões de aceitar/recusar.`, flags: 64 });
     }
 
     else if (sub === "enviar") {
@@ -1805,12 +1897,20 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (sub === "painel") {
-      await interaction.reply({ content: "⏳ Carregando painel...", flags: 64 });
-      await enviarPainelExecutores(interaction);
+      await interaction.deferReply({ flags: 64 });
+      await enviarPainelFixo(interaction.guild);
+      await interaction.editReply({ content: "✅ Painel fixo enviado/atualizado!" });
     } else if (sub === "enviar") {
       await interaction.deferReply({ flags: 64 });
       await enviarWebhookExecutores(interaction.guild);
       await interaction.editReply({ content: "✅ Webhook reenviado com sucesso!" });
+    } else if (sub === "configurar") {
+      const canal = interaction.options.getChannel("canal");
+      const config = carregarExecutores();
+      config.canalPainelFixo = canal.id;
+      salvarExecutores(config);
+      await interaction.reply({ content: `✅ Canal do painel fixo configurado para ${canal}!`, flags: 64 });
+      await enviarPainelFixo(interaction.guild);
     }
   }
 
@@ -2051,8 +2151,6 @@ async function deleteChannel(channelId) {
 // ============================================================
 // FUNÇÃO ENVIAR AVALIAÇÃO DM
 // ============================================================
-const avaliacoesPendentes = {};
-
 async function enviarAvaliacaoDM(user, staffTag, categoria, guild) {
   try {
     const embed = new EmbedBuilder()
