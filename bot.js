@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, AttachmentBuilder, WebhookClient } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, AttachmentBuilder } = require("discord.js");
 const fs = require('fs');
 const path = require('path');
 
@@ -32,6 +32,7 @@ const CARGO_SUPORTE_ID = "1513399309306036355";
 const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503";
+const CANAL_FORMULARIO_STAFF_ID = "1529652387361591428"; // Canal onde as respostas serão enviadas com botões
 
 const CARGOS_MODERACAO = ["1508405150572871720"];
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutos
@@ -334,7 +335,7 @@ function lerConfig() {
     const data = fs.readFileSync(CONFIG_PATH, 'utf8');
     return JSON.parse(data);
   } catch {
-    return { canalFormulario: null, webhookURL: null, categoriaFormulario: null };
+    return { canalFormulario: null, categoriaFormulario: null };
   }
 }
 
@@ -465,12 +466,10 @@ async function criarCanalFormulario(interaction, userId) {
   const member = await guild.members.fetch(userId).catch(() => null);
   if (!member) throw new Error('Usuário não encontrado.');
 
-  // Buscar categoria configurada (ou usar a de tickets)
   const config = lerConfig();
   let parentId = config.categoriaFormulario || CATEGORIA_TICKETS_ID;
   const parent = await guild.channels.fetch(parentId).catch(() => null);
   if (!parent) {
-    // Se não existir, tenta usar a primeira categoria disponível
     const categories = guild.channels.cache.filter(c => c.type === ChannelType.GuildCategory);
     parentId = categories.first()?.id || null;
   }
@@ -489,7 +488,6 @@ async function criarCanalFormulario(interaction, userId) {
     ]
   });
 
-  // Salvar estado no canal
   formulariosPendentes[channel.id] = {
     userId: userId,
     respostas: {},
@@ -499,7 +497,6 @@ async function criarCanalFormulario(interaction, userId) {
     timeout: null
   };
 
-  // Timeout de inatividade (5 min)
   const timeout = setTimeout(async () => {
     const estado = formulariosPendentes[channel.id];
     if (estado) {
@@ -510,7 +507,6 @@ async function criarCanalFormulario(interaction, userId) {
   }, INACTIVITY_TIMEOUT);
   formulariosPendentes[channel.id].timeout = timeout;
 
-  // Envia mensagem de boas-vindas
   const embedBoasVindas = new EmbedBuilder()
     .setTitle('📋 Formulário de Recrutamento')
     .setColor('Green')
@@ -519,7 +515,6 @@ async function criarCanalFormulario(interaction, userId) {
 
   await channel.send({ content: `<@${userId}>`, embeds: [embedBoasVindas] });
 
-  // Envia a primeira pergunta
   await enviarProximaPergunta(channel, userId);
 
   return channel;
@@ -534,7 +529,6 @@ async function enviarProximaPergunta(channel, userId) {
 
   const etapa = estado.etapa;
   if (etapa >= PERGUNTAS.length) {
-    // Todas as perguntas respondidas → mostrar resumo
     await mostrarResumo(channel, userId);
     return;
   }
@@ -554,7 +548,6 @@ async function enviarProximaPergunta(channel, userId) {
   const msg = await channel.send({ content: `<@${userId}>`, embeds: [embed] });
   estado.mensagemId = msg.id;
 
-  // Atualiza timeout
   if (estado.timeout) clearTimeout(estado.timeout);
   estado.timeout = setTimeout(async () => {
     const estadoAtual = formulariosPendentes[channel.id];
@@ -608,13 +601,12 @@ async function mostrarResumo(channel, userId) {
 }
 
 // ============================================================
-// FUNÇÃO PARA ENVIAR AO WEBHOOK
+// FUNÇÃO PARA ENVIAR RESPOSTA AO CANAL STAFF (sem webhook)
 // ============================================================
-async function enviarAoWebhook(userId, respostas, guild) {
-  const config = lerConfig();
-  const webhookURL = config.webhookURL;
-  if (!webhookURL) {
-    console.error('[FORM] Webhook não configurado.');
+async function enviarRespostaStaff(userId, respostas, guild) {
+  const canalStaff = await guild.channels.fetch(CANAL_FORMULARIO_STAFF_ID).catch(() => null);
+  if (!canalStaff) {
+    console.error('[FORM] Canal staff não encontrado.');
     return;
   }
 
@@ -632,26 +624,21 @@ async function enviarAoWebhook(userId, respostas, guild) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`form_aceitar_${userId}`)
-      .setLabel('✅ Aceitar')
+      .setLabel('✅ Aceitar Staff')
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
       .setCustomId(`form_recusar_${userId}`)
-      .setLabel('❌ Recusar')
+      .setLabel('❌ Recusar Staff')
       .setStyle(ButtonStyle.Danger)
   );
 
-  try {
-    const webhookClient = new WebhookClient({ url: webhookURL });
-    await webhookClient.send({
-      embeds: [embed],
-      components: [row],
-      username: 'Formulário de Staff',
-      avatarURL: client.user.displayAvatarURL(),
-    });
-    console.log(`[FORM] Candidatura de ${userId} enviada ao webhook.`);
-  } catch (err) {
-    console.error('[FORM] Erro ao enviar webhook:', err);
-  }
+  await canalStaff.send({
+    content: `🔔 Nova candidatura de <@${userId}>!`,
+    embeds: [embed],
+    components: [row]
+  });
+
+  console.log(`[FORM] Candidatura de ${userId} enviada ao canal staff.`);
 }
 
 // ============================================================
@@ -684,9 +671,8 @@ client.once("ready", async () => {
       .setDescription("Gerencia o formulário de recrutamento")
       .addSubcommand(sub => 
         sub.setName("configurar")
-          .setDescription("Define o canal e o webhook para o formulário")
+          .setDescription("Define o canal público para o formulário")
           .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde o painel será enviado").setRequired(true).addChannelTypes(ChannelType.GuildText))
-          .addStringOption(opt => opt.setName("webhook").setDescription("URL do webhook para receber as respostas").setRequired(true))
           .addChannelOption(opt => opt.setName("categoria").setDescription("Categoria onde os canais privados serão criados (opcional)").setRequired(false).addChannelTypes(ChannelType.GuildCategory))
       )
       .addSubcommand(sub =>
@@ -855,10 +841,8 @@ client.on("messageCreate", async (message) => {
   const estado = formulariosPendentes[message.channel.id];
   if (!estado) return;
 
-  // Verifica se a mensagem é do usuário correto
   if (message.author.id !== estado.userId) return;
 
-  // Se o usuário digitar "cancelar", cancela o formulário
   if (message.content.toLowerCase() === 'cancelar') {
     if (estado.timeout) clearTimeout(estado.timeout);
     delete formulariosPendentes[message.channel.id];
@@ -867,23 +851,16 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Verifica se o usuário está respondendo à pergunta atual
   const etapa = estado.etapa;
-  if (etapa >= PERGUNTAS.length) {
-    // Já terminou todas as perguntas, ignorar
-    return;
-  }
+  if (etapa >= PERGUNTAS.length) return;
 
   const pergunta = PERGUNTAS[etapa];
   const resposta = message.content.trim();
 
-  // Validação: não pode ser vazia
   if (pergunta.required && !resposta) {
     await message.reply('❌ Esta pergunta é obrigatória. Digite uma resposta válida.');
     return;
   }
-
-  // Validação adicional de tamanho
   if (pergunta.minLength && resposta.length < pergunta.minLength) {
     await message.reply(`❌ A resposta deve ter pelo menos ${pergunta.minLength} caracteres.`);
     return;
@@ -893,19 +870,11 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Salva a resposta
   estado.respostas[pergunta.id] = resposta;
-
-  // Avança para a próxima etapa
   estado.etapa++;
 
-  // Responde para confirmar
   await message.reply(`✅ Resposta registrada!`);
-
-  // Pausa para evitar spam (opcional)
   await new Promise(resolve => setTimeout(resolve, 500));
-
-  // Envia a próxima pergunta (ou resumo)
   await enviarProximaPergunta(message.channel, estado.userId);
 });
 
@@ -1123,7 +1092,6 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === "formulario_iniciar") {
       const userId = interaction.user.id;
 
-      // Verifica se o usuário já tem um formulário em andamento
       for (const [channelId, estado] of Object.entries(formulariosPendentes)) {
         if (estado.userId === userId) {
           return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Verifique seu canal privado.", flags: 64 });
@@ -1149,7 +1117,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const userId = estado.userId;
-        await enviarAoWebhook(userId, estado.respostas, interaction.guild);
+        await enviarRespostaStaff(userId, estado.respostas, interaction.guild);
         formulariosEnviados[userId] = { respostas: estado.respostas, guildId: interaction.guild.id };
 
         if (estado.timeout) clearTimeout(estado.timeout);
@@ -1157,7 +1125,6 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.update({ content: "✅ Formulário enviado com sucesso! Aguarde a análise da equipe.", embeds: [], components: [] });
 
-        // Deleta o canal após 5 segundos
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
       } catch (error) {
         console.error('[ERRO CONFIRMAR]', error);
@@ -1174,7 +1141,7 @@ client.on("interactionCreate", async (interaction) => {
       setTimeout(() => interaction.channel.delete().catch(() => {}), 2000);
     }
 
-    // ========== FORMULÁRIO: ACEITAR (webhook) ==========
+    // ========== FORMULÁRIO: ACEITAR STAFF (botão no canal staff) ==========
     if (interaction.customId.startsWith("form_aceitar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1201,7 +1168,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: `✅ Candidatura de <@${userId}> aprovada! DM enviada.`, flags: 64 });
     }
 
-    // ========== FORMULÁRIO: RECUSAR (webhook) ==========
+    // ========== FORMULÁRIO: RECUSAR STAFF (botão no canal staff) ==========
     if (interaction.customId.startsWith("form_recusar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1498,24 +1465,18 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({ content: "❌ Apenas staff pode configurar o formulário.", flags: 64 });
       }
       const canal = interaction.options.getChannel("canal");
-      const webhook = interaction.options.getString("webhook");
       const categoria = interaction.options.getChannel("categoria");
 
-      if (!canal || !webhook) {
-        return interaction.reply({ content: "❌ Você precisa fornecer um canal e uma URL de webhook.", flags: 64 });
-      }
-
-      if (!webhook.startsWith('https://discord.com/api/webhooks/')) {
-        return interaction.reply({ content: "❌ URL de webhook inválida. Deve começar com `https://discord.com/api/webhooks/`", flags: 64 });
+      if (!canal) {
+        return interaction.reply({ content: "❌ Você precisa fornecer um canal.", flags: 64 });
       }
 
       const config = lerConfig();
       config.canalFormulario = canal.id;
-      config.webhookURL = webhook;
       if (categoria) config.categoriaFormulario = categoria.id;
       salvarConfig(config);
 
-      await interaction.reply({ content: `✅ Configurações salvas!\nCanal: ${canal}\nWebhook: \`${webhook}\`\nCategoria: ${categoria ? categoria.name : 'Usando padrão (tickets)'}`, flags: 64 });
+      await interaction.reply({ content: `✅ Configurações salvas!\nCanal público: ${canal}\nCategoria: ${categoria ? categoria.name : 'Usando padrão (tickets)'}\n\n📌 As respostas serão enviadas no canal <#${CANAL_FORMULARIO_STAFF_ID}> com botões de aceitar/recusar.`, flags: 64 });
     }
 
     else if (sub === "enviar") {
