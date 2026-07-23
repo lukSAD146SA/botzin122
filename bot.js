@@ -347,7 +347,6 @@ const PERGUNTAS = [
   {
     id: 'nome',
     label: 'Qual o seu nome completo?',
-    style: TextInputStyle.Short,
     placeholder: 'Ex: João Silva',
     required: true,
     minLength: 3,
@@ -356,7 +355,6 @@ const PERGUNTAS = [
   {
     id: 'idade',
     label: 'Quantos anos você tem?',
-    style: TextInputStyle.Short,
     placeholder: 'Ex: 18',
     required: true,
     minLength: 1,
@@ -365,7 +363,6 @@ const PERGUNTAS = [
   {
     id: 'discord',
     label: 'Qual seu Discord (com tag)?',
-    style: TextInputStyle.Short,
     placeholder: 'Ex: João#1234',
     required: true,
     minLength: 5,
@@ -374,7 +371,6 @@ const PERGUNTAS = [
   {
     id: 'experiencia',
     label: 'Você já foi staff em algum outro servidor? Se sim, onde e por quanto tempo?',
-    style: TextInputStyle.Paragraph,
     placeholder: 'Descreva sua experiência anterior...',
     required: true,
     maxLength: 500
@@ -382,7 +378,6 @@ const PERGUNTAS = [
   {
     id: 'disponibilidade',
     label: 'Quantas horas por dia, em média, você consegue ficar online?',
-    style: TextInputStyle.Short,
     placeholder: 'Ex: 4 horas',
     required: true,
     maxLength: 30
@@ -390,7 +385,6 @@ const PERGUNTAS = [
   {
     id: 'motivacao',
     label: 'Por que você quer ser staff aqui?',
-    style: TextInputStyle.Paragraph,
     placeholder: 'Explique sua motivação...',
     required: true,
     maxLength: 500
@@ -398,7 +392,6 @@ const PERGUNTAS = [
   {
     id: 'habilidades',
     label: 'Você tem conhecimento em moderação (comandos, bots, etc.)? Descreva.',
-    style: TextInputStyle.Paragraph,
     placeholder: 'Ex: Sei usar os comandos de mute, kick, ban, conheço bots de moderação...',
     required: true,
     maxLength: 500
@@ -406,7 +399,6 @@ const PERGUNTAS = [
   {
     id: 'cenario',
     label: 'Como você reagiria se um membro estivesse desrespeitando as regras repetidamente?',
-    style: TextInputStyle.Paragraph,
     placeholder: 'Descreva sua abordagem...',
     required: true,
     maxLength: 500
@@ -470,81 +462,90 @@ async function enviarPainelFormulario(guild) {
 }
 
 // ============================================================
-// FUNÇÃO PARA ENVIAR MODAL COM PRÓXIMAS PERGUNTAS (CORRIGIDA)
+// FUNÇÃO PARA ENVIAR PRÓXIMA PERGUNTA (via mensagem)
 // ============================================================
-async function enviarProximoModal(interaction, userId) {
+async function enviarProximaPergunta(interaction, userId) {
   const estado = formulariosPendentes[userId];
-  if (!estado) {
-    throw new Error('Estado do formulário não encontrado.');
-  }
+  if (!estado) return;
 
-  const start = estado.etapa;
-  const perguntasRestantes = PERGUNTAS.slice(start);
-  if (perguntasRestantes.length === 0) {
-    // Se não houver mais perguntas, mostra o resumo
+  const etapa = estado.etapa;
+  if (etapa >= PERGUNTAS.length) {
+    // Todas as perguntas respondidas → mostrar resumo
     await mostrarResumo(interaction, userId);
     return;
   }
 
-  const perguntasModal = perguntasRestantes.slice(0, 5);
-  const modal = new ModalBuilder()
-    .setCustomId(`form_modal_${userId}`)
-    .setTitle(`Formulário - Etapa ${Math.floor(start / 5) + 1}`);
+  const pergunta = PERGUNTAS[etapa];
+  let texto = `**📝 Pergunta ${etapa + 1}/${PERGUNTAS.length}**\n\n`;
+  texto += `**${pergunta.label}**\n`;
+  if (pergunta.placeholder) texto += `\n*${pergunta.placeholder}*`;
+  texto += `\n\n✏️ **Digite sua resposta abaixo** (ou digite \`cancelar\` para desistir).`;
 
-  for (const pergunta of perguntasModal) {
-    const input = new TextInputBuilder()
-      .setCustomId(pergunta.id)
-      .setLabel(pergunta.label)
-      .setStyle(pergunta.style)
-      .setPlaceholder(pergunta.placeholder || '')
-      .setRequired(pergunta.required !== undefined ? pergunta.required : true);
-    if (pergunta.minLength) input.setMinLength(pergunta.minLength);
-    if (pergunta.maxLength) input.setMaxLength(pergunta.maxLength);
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-  }
+  // Envia a pergunta
+  const mensagem = await interaction.channel.send({
+    content: `<@${userId}>`,
+    embeds: [
+      new EmbedBuilder()
+        .setColor('Blue')
+        .setDescription(texto)
+        .setFooter({ text: `Você tem 5 minutos para responder.` })
+        .setTimestamp()
+    ]
+  });
 
-  // Tenta mostrar o modal – se falhar, o erro será capturado pelo caller
-  await interaction.showModal(modal);
+  // Salva o ID da mensagem para referência
+  estado.mensagemId = mensagem.id;
+
+  // Atualiza o timeout
+  if (estado.timeout) clearTimeout(estado.timeout);
+  estado.timeout = setTimeout(() => {
+    if (formulariosPendentes[userId]) {
+      delete formulariosPendentes[userId];
+      interaction.channel.send(`⏰ ${interaction.user}, o formulário foi cancelado por inatividade.`);
+    }
+  }, 5 * 60 * 1000);
 }
 
 // ============================================================
-// FUNÇÃO PARA MOSTRAR RESUMO E CONFIRMAÇÃO
+// FUNÇÃO PARA MOSTRAR RESUMO E CONFIRMAÇÃO (via mensagem)
 // ============================================================
 async function mostrarResumo(interaction, userId) {
-  try {
-    const estado = formulariosPendentes[userId];
-    if (!estado) return interaction.reply({ content: '❌ Sessão expirada.', flags: 64 });
+  const estado = formulariosPendentes[userId];
+  if (!estado) return;
 
-    const respostas = estado.respostas;
-    let descricao = '';
-    for (const pergunta of PERGUNTAS) {
-      const resposta = respostas[pergunta.id] || '(não respondido)';
-      descricao += `**${pergunta.label}**\n${resposta}\n\n`;
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle('📋 Revisão do Formulário')
-      .setDescription(descricao)
-      .setColor('Yellow')
-      .setFooter({ text: 'Confirme ou cancele o envio.' })
-      .setTimestamp();
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('form_confirmar')
-        .setLabel('✅ Confirmar e Enviar')
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId('form_cancelar')
-        .setLabel('❌ Cancelar')
-        .setStyle(ButtonStyle.Danger)
-    );
-
-    await interaction.reply({ embeds: [embed], components: [row], flags: 64 });
-  } catch (error) {
-    console.error('[ERRO RESUMO]', error);
-    await interaction.reply({ content: '❌ Erro ao mostrar o resumo. Tente novamente.', flags: 64 });
+  const respostas = estado.respostas;
+  let descricao = '';
+  for (const pergunta of PERGUNTAS) {
+    const resposta = respostas[pergunta.id] || '(não respondido)';
+    descricao += `**${pergunta.label}**\n${resposta}\n\n`;
   }
+
+  const embed = new EmbedBuilder()
+    .setTitle('📋 Revisão do Formulário')
+    .setDescription(descricao)
+    .setColor('Yellow')
+    .setFooter({ text: 'Confirme ou cancele o envio.' })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('form_confirmar')
+      .setLabel('✅ Confirmar e Enviar')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('form_cancelar')
+      .setLabel('❌ Cancelar')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  const msg = await interaction.channel.send({
+    content: `<@${userId}>`,
+    embeds: [embed],
+    components: [row]
+  });
+
+  // Atualiza o estado com o ID da mensagem de resumo
+  estado.mensagemId = msg.id;
 }
 
 // ============================================================
@@ -669,7 +670,7 @@ client.once("ready", async () => {
 });
 
 // ============================================================
-// EVENTO DE MENSAGENS
+// EVENTO DE MENSAGENS (sticky, flood, etc.)
 // ============================================================
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
@@ -787,6 +788,65 @@ client.on("messageCreate", async (message) => {
     }
     return;
   }
+
+  // ============================================================
+  // CAPTURA DE RESPOSTAS DO FORMULÁRIO (via mensagem)
+  // ============================================================
+  const userId = message.author.id;
+  const estado = formulariosPendentes[userId];
+  if (!estado) return;
+
+  // Verifica se a mensagem é no mesmo canal onde o formulário foi iniciado
+  if (message.channel.id !== estado.canalId) return;
+
+  // Se o usuário digitar "cancelar", cancela o formulário
+  if (message.content.toLowerCase() === 'cancelar') {
+    if (estado.timeout) clearTimeout(estado.timeout);
+    delete formulariosPendentes[userId];
+    await message.reply('❌ Formulário cancelado.');
+    return;
+  }
+
+  // Verifica se o usuário está respondendo à pergunta atual
+  const etapa = estado.etapa;
+  if (etapa >= PERGUNTAS.length) {
+    // Já terminou todas as perguntas, ignorar
+    return;
+  }
+
+  const pergunta = PERGUNTAS[etapa];
+  const resposta = message.content.trim();
+
+  // Validação: não pode ser vazia
+  if (pergunta.required && !resposta) {
+    await message.reply('❌ Esta pergunta é obrigatória. Digite uma resposta válida.');
+    return;
+  }
+
+  // Validação adicional de tamanho
+  if (pergunta.minLength && resposta.length < pergunta.minLength) {
+    await message.reply(`❌ A resposta deve ter pelo menos ${pergunta.minLength} caracteres.`);
+    return;
+  }
+  if (pergunta.maxLength && resposta.length > pergunta.maxLength) {
+    await message.reply(`❌ A resposta deve ter no máximo ${pergunta.maxLength} caracteres.`);
+    return;
+  }
+
+  // Salva a resposta
+  estado.respostas[pergunta.id] = resposta;
+
+  // Avança para a próxima etapa
+  estado.etapa++;
+
+  // Responde para confirmar
+  await message.reply(`✅ Resposta registrada!`);
+
+  // Pausa para evitar spam (opcional)
+  await new Promise(resolve => setTimeout(resolve, 500));
+
+  // Envia a próxima pergunta (ou resumo)
+  await enviarProximaPergunta({ channel: message.channel, user: message.author }, userId);
 });
 
 // ============================================================
@@ -1003,32 +1063,25 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === "formulario_iniciar") {
       const userId = interaction.user.id;
 
-      // Verifica se já existe um formulário pendente
       if (formulariosPendentes[userId]) {
         return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Termine ou cancele antes.", flags: 64 });
       }
 
-      // Cria o estado ANTES de tentar abrir o modal
+      // Cria estado
       formulariosPendentes[userId] = {
         respostas: {},
         etapa: 0,
-        channelId: interaction.channel.id,
-        // Timeout para limpeza automática (5 minutos)
-        timeout: setTimeout(() => {
-          if (formulariosPendentes[userId]) {
-            console.log(`[FORM] Estado do usuário ${userId} removido por timeout.`);
-            delete formulariosPendentes[userId];
-          }
-        }, 5 * 60 * 1000)
+        canalId: interaction.channel.id,
+        mensagemId: null,
+        timeout: null
       };
 
       try {
-        await enviarProximoModal(interaction, userId);
+        // Responde ao clique e já envia a primeira pergunta
+        await interaction.reply({ content: `✅ Formulário iniciado! Responda às perguntas no chat.`, flags: 64 });
+        await enviarProximaPergunta(interaction, userId);
       } catch (error) {
-        // Se o modal falhar, remove o estado para não travar o usuário
-        if (formulariosPendentes[userId]?.timeout) {
-          clearTimeout(formulariosPendentes[userId].timeout);
-        }
+        if (formulariosPendentes[userId]?.timeout) clearTimeout(formulariosPendentes[userId].timeout);
         delete formulariosPendentes[userId];
         console.error('[ERRO BOTÃO INICIAR]', error);
         await interaction.reply({ content: '❌ Erro ao iniciar o formulário. Tente novamente.', flags: 64 });
@@ -1150,51 +1203,6 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: "✅ Sua avaliação foi enviada com sucesso!", ephemeral: true });
       } else {
         await interaction.reply({ content: "❌ Não foi possível encontrar o canal de logs de avaliação.", ephemeral: true });
-      }
-      return;
-    }
-
-    // ========== MODAL DO FORMULÁRIO (submissão de respostas) ==========
-    if (interaction.customId.startsWith("form_modal_")) {
-      try {
-        const userId = interaction.user.id;
-        const estado = formulariosPendentes[userId];
-        if (!estado) {
-          return interaction.reply({ content: "❌ Sessão expirada. Inicie novamente clicando no botão.", flags: 64 });
-        }
-
-        // Atualiza o timeout do estado
-        if (estado.timeout) {
-          clearTimeout(estado.timeout);
-          estado.timeout = setTimeout(() => {
-            if (formulariosPendentes[userId]) {
-              console.log(`[FORM] Estado do usuário ${userId} removido por timeout.`);
-              delete formulariosPendentes[userId];
-            }
-          }, 5 * 60 * 1000);
-        }
-
-        const fields = interaction.fields;
-        const start = estado.etapa;
-        const perguntasModal = PERGUNTAS.slice(start, start + 5);
-        for (const pergunta of perguntasModal) {
-          const valor = fields.getTextInputValue(pergunta.id);
-          if (pergunta.required && (!valor || valor.trim() === '')) {
-            return interaction.reply({ content: `❌ O campo "${pergunta.label}" é obrigatório.`, flags: 64 });
-          }
-          estado.respostas[pergunta.id] = valor.trim();
-        }
-
-        estado.etapa += perguntasModal.length;
-
-        if (estado.etapa < PERGUNTAS.length) {
-          await enviarProximoModal(interaction, userId);
-        } else {
-          await mostrarResumo(interaction, userId);
-        }
-      } catch (error) {
-        console.error('[ERRO MODAL SUBMIT]', error);
-        await interaction.reply({ content: '❌ Erro ao processar suas respostas. Tente novamente.', flags: 64 });
       }
       return;
     }
