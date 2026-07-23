@@ -31,8 +31,6 @@ const CARGO_STAFF_ID = "1508405150572871720";
 const CARGO_SUPORTE_ID = "1513399309306036355";
 const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
-
-// Canal secreto para logs de código cru (ofuscador)
 const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503";
 
 const CARGOS_MODERACAO = ["1508405150572871720"];
@@ -101,25 +99,17 @@ function formatarTempo(ms) {
 }
 
 // ============================================================
-// OFUSCADOR AVANÇADO (hex + BOM + null byte + fragmentação)
+// OFUSCADOR AVANÇADO
 // ============================================================
 function ofuscar(codigo, numChunks) {
   if (!codigo || codigo.trim() === '') return '';
-
-  // 1. Adiciona comentário com byte nulo no início
   const codigoComNull = "--[[ \x00 ]] " + codigo;
-
-  // 2. Converte cada caractere para \xHH
   let hex = '';
   for (let i = 0; i < codigoComNull.length; i++) {
     const code = codigoComNull.charCodeAt(i);
     hex += '\\x' + code.toString(16).padStart(2, '0');
   }
-
-  // 3. Adiciona BOM (Byte Order Mark)
   hex = '\\xef\\xbb\\xbf' + hex;
-
-  // 4. Fragmenta aleatoriamente
   let chunks = [];
   if (numChunks <= 1) {
     chunks = [hex];
@@ -142,8 +132,6 @@ function ofuscar(codigo, numChunks) {
     chunks = chunks.filter(c => c.length > 0);
     if (chunks.length === 0) chunks = [hex];
   }
-
-  // 5. Junta com separadores aleatórios (espaços, quebras)
   let ofuscado = '';
   const sep = ['..', '.. ', '..  ', ' ..', ' .. ', '\n..\n', '\n.. ', ' ..\n'];
   for (let i = 0; i < chunks.length; i++) {
@@ -152,18 +140,13 @@ function ofuscar(codigo, numChunks) {
       ofuscado += sep[Math.floor(Math.random() * sep.length)];
     }
   }
-
-  // 6. Ofusca "load"
   const loadOfuscado = '"\\x6c\\x6f\\x61\\x64"';
-
-  // 7. Cabeçalho fixo
   const HEADER = "-----powered by https://discord.gg/tR27QgcHyr\n";
-
   return HEADER + `_G[${loadOfuscado}](${ofuscado})()`;
 }
 
 // ============================================================
-// PAINEL DE TICKET (suporte)
+// PAINEL DE TICKET
 // ============================================================
 async function enviarPainelTicket(guild) {
   try {
@@ -194,7 +177,7 @@ async function enviarPainelTicket(guild) {
 }
 
 // ============================================================
-// PAINEL DE AVALIAÇÃO (sem moedas)
+// PAINEL DE AVALIAÇÃO
 // ============================================================
 async function enviarPainelAvaliacao(guild) {
   try {
@@ -222,7 +205,7 @@ async function enviarPainelAvaliacao(guild) {
 }
 
 // ============================================================
-// FUNÇÕES DE GIVEAWAY (mantidas)
+// GIVEAWAY
 // ============================================================
 const giveaways = {};
 
@@ -323,7 +306,7 @@ async function finalizarGiveaway(messageId) {
 }
 
 // ============================================================
-// PALAVRAS PROIBIDAS (anti‑flood e conteúdo)
+// PALAVRAS PROIBIDAS
 // ============================================================
 const PALAVRAS_GRAVES = [
   "hitler", "nazista", "nazismo", "nazi",
@@ -358,7 +341,7 @@ function salvarConfig(config) {
 }
 
 // ============================================================
-// PERGUNTAS DO FORMULÁRIO (edite aqui)
+// PERGUNTAS DO FORMULÁRIO
 // ============================================================
 const PERGUNTAS = [
   {
@@ -434,7 +417,7 @@ const PERGUNTAS = [
 // ESTADOS DOS FORMULÁRIOS EM ANDAMENTO
 // ============================================================
 const formulariosPendentes = {};
-const formulariosEnviados = {}; // guarda respostas para referência ao aceitar/recusar (key: userId)
+const formulariosEnviados = {};
 
 // ============================================================
 // FUNÇÃO PARA ENVIAR O PAINEL DO FORMULÁRIO
@@ -452,7 +435,6 @@ async function enviarPainelFormulario(guild) {
     return;
   }
 
-  // Apaga mensagens antigas do bot no canal
   const msgs = await canal.messages.fetch({ limit: 20 }).catch(() => []);
   const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
   for (const [, msg] of botMsgs) {
@@ -471,8 +453,8 @@ async function enviarPainelFormulario(guild) {
       'Clique no botão abaixo para iniciar o formulário. São poucas perguntas, mas seja sincero(a)!'
     )
     .setColor('Blue')
-    .setImage('https://i.imgur.com/tov858d.png') // pode trocar a imagem
-    .setFooter({ text: 'Skyland • Recrutamento' })
+    .setImage('https://i.imgur.com/tov858d.png')
+    .setFooter({ text: 'Script do Zé • Recrutamento • Todos os direitos reservados' })
     .setTimestamp();
 
   const row = new ActionRowBuilder().addComponents(
@@ -488,74 +470,83 @@ async function enviarPainelFormulario(guild) {
 }
 
 // ============================================================
-// FUNÇÃO PARA ENVIAR MODAL COM PRÓXIMAS PERGUNTAS
+// FUNÇÃO PARA ENVIAR MODAL COM PRÓXIMAS PERGUNTAS (CORRIGIDA)
 // ============================================================
-function enviarProximoModal(interaction, userId) {
-  const estado = formulariosPendentes[userId];
-  if (!estado) {
-    return interaction.reply({ content: '❌ Ocorreu um erro, reinicie o formulário.', flags: 64 });
+async function enviarProximoModal(interaction, userId) {
+  try {
+    const estado = formulariosPendentes[userId];
+    if (!estado) {
+      return interaction.reply({ content: '❌ Ocorreu um erro, reinicie o formulário.', flags: 64 });
+    }
+
+    const start = estado.etapa;
+    const perguntasRestantes = PERGUNTAS.slice(start);
+    if (perguntasRestantes.length === 0) {
+      return mostrarResumo(interaction, userId);
+    }
+
+    const perguntasModal = perguntasRestantes.slice(0, 5);
+    const modal = new ModalBuilder()
+      .setCustomId(`form_modal_${userId}`)
+      .setTitle(`Formulário - Etapa ${Math.floor(start / 5) + 1}`);
+
+    for (const pergunta of perguntasModal) {
+      const input = new TextInputBuilder()
+        .setCustomId(pergunta.id)
+        .setLabel(pergunta.label)
+        .setStyle(pergunta.style)
+        .setPlaceholder(pergunta.placeholder || '')
+        .setRequired(pergunta.required !== undefined ? pergunta.required : true);
+      if (pergunta.minLength) input.setMinLength(pergunta.minLength);
+      if (pergunta.maxLength) input.setMaxLength(pergunta.maxLength);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+    }
+
+    await interaction.showModal(modal);
+  } catch (error) {
+    console.error('[ERRO MODAL]', error);
+    await interaction.reply({ content: '❌ Ocorreu um erro ao abrir o formulário. Tente novamente.', flags: 64 });
   }
-
-  const start = estado.etapa;
-  const perguntasRestantes = PERGUNTAS.slice(start);
-  if (perguntasRestantes.length === 0) {
-    return mostrarResumo(interaction, userId);
-  }
-
-  // Pega no máximo 5 perguntas
-  const perguntasModal = perguntasRestantes.slice(0, 5);
-  const modal = new ModalBuilder()
-    .setCustomId(`form_modal_${userId}`)
-    .setTitle(`Formulário - Etapa ${Math.floor(start / 5) + 1}`);
-
-  for (const pergunta of perguntasModal) {
-    const input = new TextInputBuilder()
-      .setCustomId(pergunta.id)
-      .setLabel(pergunta.label)
-      .setStyle(pergunta.style)
-      .setPlaceholder(pergunta.placeholder || '')
-      .setRequired(pergunta.required !== undefined ? pergunta.required : true);
-    if (pergunta.minLength) input.setMinLength(pergunta.minLength);
-    if (pergunta.maxLength) input.setMaxLength(pergunta.maxLength);
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-  }
-
-  interaction.showModal(modal);
 }
 
 // ============================================================
 // FUNÇÃO PARA MOSTRAR RESUMO E CONFIRMAÇÃO
 // ============================================================
 async function mostrarResumo(interaction, userId) {
-  const estado = formulariosPendentes[userId];
-  if (!estado) return interaction.reply({ content: '❌ Sessão expirada.', flags: 64 });
+  try {
+    const estado = formulariosPendentes[userId];
+    if (!estado) return interaction.reply({ content: '❌ Sessão expirada.', flags: 64 });
 
-  const respostas = estado.respostas;
-  let descricao = '';
-  for (const pergunta of PERGUNTAS) {
-    const resposta = respostas[pergunta.id] || '(não respondido)';
-    descricao += `**${pergunta.label}**\n${resposta}\n\n`;
+    const respostas = estado.respostas;
+    let descricao = '';
+    for (const pergunta of PERGUNTAS) {
+      const resposta = respostas[pergunta.id] || '(não respondido)';
+      descricao += `**${pergunta.label}**\n${resposta}\n\n`;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('📋 Revisão do Formulário')
+      .setDescription(descricao)
+      .setColor('Yellow')
+      .setFooter({ text: 'Confirme ou cancele o envio.' })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('form_confirmar')
+        .setLabel('✅ Confirmar e Enviar')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId('form_cancelar')
+        .setLabel('❌ Cancelar')
+        .setStyle(ButtonStyle.Danger)
+    );
+
+    await interaction.reply({ embeds: [embed], components: [row], flags: 64 });
+  } catch (error) {
+    console.error('[ERRO RESUMO]', error);
+    await interaction.reply({ content: '❌ Erro ao mostrar o resumo. Tente novamente.', flags: 64 });
   }
-
-  const embed = new EmbedBuilder()
-    .setTitle('📋 Revisão do Formulário')
-    .setDescription(descricao)
-    .setColor('Yellow')
-    .setFooter({ text: 'Confirme ou cancele o envio.' })
-    .setTimestamp();
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('form_confirmar')
-      .setLabel('✅ Confirmar e Enviar')
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId('form_cancelar')
-      .setLabel('❌ Cancelar')
-      .setStyle(ButtonStyle.Danger)
-  );
-
-  await interaction.reply({ embeds: [embed], components: [row], flags: 64 });
 }
 
 // ============================================================
@@ -569,7 +560,6 @@ async function enviarAoWebhook(userId, respostas, guild) {
     return;
   }
 
-  // Monta embed com as respostas
   const embed = new EmbedBuilder()
     .setTitle('📝 Nova Candidatura')
     .setColor('Blue')
@@ -581,7 +571,6 @@ async function enviarAoWebhook(userId, respostas, guild) {
     embed.addFields({ name: pergunta.label, value: respostas[pergunta.id] || 'Não informado', inline: false });
   }
 
-  // Botões (customId contém userId)
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`form_aceitar_${userId}`)
@@ -613,7 +602,6 @@ async function enviarAoWebhook(userId, respostas, guild) {
 client.once("ready", async () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
 
-  // Registrar comandos
   const commands = [
     new SlashCommandBuilder().setName("say").setDescription("Faz o bot enviar uma mensagem").addStringOption((opt) => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true)).addChannelOption((opt) => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
     new SlashCommandBuilder().setName("avatar").setDescription("Mostra a foto de perfil de alguém").addUserOption((opt) => opt.setName("usuario").setDescription("De quem ver o avatar").setRequired(false)),
@@ -671,13 +659,10 @@ client.once("ready", async () => {
   if (guild) {
     await enviarPainelAvaliacao(guild);
     console.log("📌 Painel de avaliação enviado (se o canal existir).");
-    // Opcional: enviar painel do formulário automaticamente no ready
-    // await enviarPainelFormulario(guild);
   } else {
     console.warn("⚠️ Servidor não encontrado. Verifique o GUILD_ID.");
   }
 
-  // Loop de giveaways a cada 15s
   setInterval(async () => {
     for (const messageId in giveaways) {
       if (!giveaways[messageId].ended) {
@@ -688,12 +673,12 @@ client.once("ready", async () => {
 });
 
 // ============================================================
-// EVENTO DE MENSAGENS (sticky, flood, palavras proibidas)
+// EVENTO DE MENSAGENS
 // ============================================================
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  // Sticky messages
+  // Sticky
   if (message.content.startsWith(".st")) {
     if (!temCargoMod(message.member)) {
       return message.reply("❌ Você não tem permissão para usar este comando.");
@@ -727,7 +712,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Manter sticky sempre em baixo
+  // Manter sticky
   const sticky = stickyMessages[message.channel.id];
   if (sticky) {
     if (message.author.id === client.user.id && message.id === sticky.messageId) {
@@ -809,12 +794,12 @@ client.on("messageCreate", async (message) => {
 });
 
 // ============================================================
-// INTERACTIONS (BOTÕES, MODAIS, SELECTS, COMANDOS)
+// INTERACTIONS
 // ============================================================
 client.on("interactionCreate", async (interaction) => {
   // ---- BOTÕES ----
   if (interaction.isButton()) {
-    // Botão "Dúvidas" do formulário (antigo) – mantido
+    // Botão "Dúvidas" do formulário (antigo)
     if (interaction.customId === "formulario_duvidas") {
       const select = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -848,7 +833,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Avaliação de ticket (sem moedas)
+    // Avaliação de ticket
     if (interaction.customId.startsWith("avaliacao_ticket_")) {
       const nota = parseInt(interaction.customId.split("_")[2]);
       const estrelas = "⭐".repeat(nota);
@@ -865,7 +850,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `✅ Obrigado pela avaliação! Você deu **${estrelas} (${nota}/5)**.`, embeds: [], components: [] });
     }
 
-    // Avaliação de chat (sem moedas)
+    // Avaliação de chat
     if (interaction.customId.startsWith("avaliacao_chat_")) {
       const partes = interaction.customId.split("_");
       const nota = parseInt(partes[2]);
@@ -930,7 +915,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Botões de deletar canal
+    // Deletar canal
     if (interaction.customId.startsWith("confirmar_deletar_canal_")) {
       const canalId = interaction.customId.split("_")[3];
       const canal = await interaction.guild.channels.fetch(canalId).catch(() => null);
@@ -964,7 +949,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.update({ content: "❌ Operação cancelada. Nenhum canal foi deletado.", components: [] });
     }
 
-    // Botões de escolha de fragmentos (ofuscador)
+    // Ofuscador
     if (interaction.customId.startsWith("chunks_")) {
       const chunks = parseInt(interaction.customId.split("_")[1]);
       const channelId = interaction.channel.id;
@@ -992,7 +977,7 @@ client.on("interactionCreate", async (interaction) => {
       } catch {}
     }
 
-    // Botões de giveaway
+    // Giveaway
     if (interaction.customId.startsWith("giveaway_join_")) {
       const messageId = interaction.customId.replace("giveaway_join_", "");
       const giveaway = giveaways[messageId];
@@ -1018,47 +1003,56 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "Este giveaway já foi encerrado.", flags: 64 });
     }
 
-    // ========== NOVOS BOTÕES DO FORMULÁRIO ==========
-    // Botão: Iniciar formulário
+    // ========== FORMULÁRIO: INICIAR ==========
     if (interaction.customId === "formulario_iniciar") {
-      const userId = interaction.user.id;
-      if (formulariosPendentes[userId]) {
-        return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Termine ou cancele antes.", flags: 64 });
+      try {
+        const userId = interaction.user.id;
+        if (formulariosPendentes[userId]) {
+          return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Termine ou cancele antes.", flags: 64 });
+        }
+
+        formulariosPendentes[userId] = {
+          respostas: {},
+          etapa: 0,
+          channelId: interaction.channel.id,
+        };
+
+        await enviarProximoModal(interaction, userId);
+      } catch (error) {
+        console.error('[ERRO BOTÃO INICIAR]', error);
+        await interaction.reply({ content: '❌ Erro ao iniciar o formulário. Tente novamente.', flags: 64 });
       }
-
-      formulariosPendentes[userId] = {
-        respostas: {},
-        etapa: 0,
-        channelId: interaction.channel.id,
-      };
-
-      await enviarProximoModal(interaction, userId);
     }
 
-    // Botão: Confirmar envio
+    // ========== FORMULÁRIO: CONFIRMAR ==========
     if (interaction.customId === "form_confirmar") {
-      const userId = interaction.user.id;
-      const estado = formulariosPendentes[userId];
-      if (!estado) {
-        return interaction.reply({ content: "❌ Sessão expirada.", flags: 64 });
+      try {
+        const userId = interaction.user.id;
+        const estado = formulariosPendentes[userId];
+        if (!estado) {
+          return interaction.reply({ content: "❌ Sessão expirada.", flags: 64 });
+        }
+
+        await enviarAoWebhook(userId, estado.respostas, interaction.guild);
+        formulariosEnviados[userId] = { respostas: estado.respostas, guildId: interaction.guild.id };
+
+        delete formulariosPendentes[userId];
+
+        await interaction.update({ content: "✅ Formulário enviado com sucesso! Aguarde a análise da equipe.", embeds: [], components: [] });
+      } catch (error) {
+        console.error('[ERRO CONFIRMAR]', error);
+        await interaction.reply({ content: '❌ Erro ao enviar o formulário. Tente novamente.', flags: 64 });
       }
-
-      await enviarAoWebhook(userId, estado.respostas, interaction.guild);
-      formulariosEnviados[userId] = { respostas: estado.respostas, guildId: interaction.guild.id };
-
-      delete formulariosPendentes[userId];
-
-      await interaction.update({ content: "✅ Formulário enviado com sucesso! Aguarde a análise da equipe.", embeds: [], components: [] });
     }
 
-    // Botão: Cancelar
+    // ========== FORMULÁRIO: CANCELAR ==========
     if (interaction.customId === "form_cancelar") {
       const userId = interaction.user.id;
       delete formulariosPendentes[userId];
       await interaction.update({ content: "❌ Formulário cancelado.", embeds: [], components: [] });
     }
 
-    // Botões do webhook: Aceitar
+    // ========== FORMULÁRIO: ACEITAR ==========
     if (interaction.customId.startsWith("form_aceitar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1085,7 +1079,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: `✅ Candidatura de <@${userId}> aprovada! DM enviada.`, flags: 64 });
     }
 
-    // Botões do webhook: Recusar
+    // ========== FORMULÁRIO: RECUSAR ==========
     if (interaction.customId.startsWith("form_recusar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1146,31 +1140,36 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- MODAL DO FORMULÁRIO (submissão de respostas) ----
+    // ========== MODAL DO FORMULÁRIO (submissão de respostas) ==========
     if (interaction.customId.startsWith("form_modal_")) {
-      const userId = interaction.user.id;
-      const estado = formulariosPendentes[userId];
-      if (!estado) {
-        return interaction.reply({ content: "❌ Sessão expirada. Inicie novamente clicando no botão.", flags: 64 });
-      }
-
-      const fields = interaction.fields;
-      const start = estado.etapa;
-      const perguntasModal = PERGUNTAS.slice(start, start + 5);
-      for (const pergunta of perguntasModal) {
-        const valor = fields.getTextInputValue(pergunta.id);
-        if (pergunta.required && (!valor || valor.trim() === '')) {
-          return interaction.reply({ content: `❌ O campo "${pergunta.label}" é obrigatório.`, flags: 64 });
+      try {
+        const userId = interaction.user.id;
+        const estado = formulariosPendentes[userId];
+        if (!estado) {
+          return interaction.reply({ content: "❌ Sessão expirada. Inicie novamente clicando no botão.", flags: 64 });
         }
-        estado.respostas[pergunta.id] = valor.trim();
-      }
 
-      estado.etapa += perguntasModal.length;
+        const fields = interaction.fields;
+        const start = estado.etapa;
+        const perguntasModal = PERGUNTAS.slice(start, start + 5);
+        for (const pergunta of perguntasModal) {
+          const valor = fields.getTextInputValue(pergunta.id);
+          if (pergunta.required && (!valor || valor.trim() === '')) {
+            return interaction.reply({ content: `❌ O campo "${pergunta.label}" é obrigatório.`, flags: 64 });
+          }
+          estado.respostas[pergunta.id] = valor.trim();
+        }
 
-      if (estado.etapa < PERGUNTAS.length) {
-        await enviarProximoModal(interaction, userId);
-      } else {
-        await mostrarResumo(interaction, userId);
+        estado.etapa += perguntasModal.length;
+
+        if (estado.etapa < PERGUNTAS.length) {
+          await enviarProximoModal(interaction, userId);
+        } else {
+          await mostrarResumo(interaction, userId);
+        }
+      } catch (error) {
+        console.error('[ERRO MODAL SUBMIT]', error);
+        await interaction.reply({ content: '❌ Erro ao processar suas respostas. Tente novamente.', flags: 64 });
       }
       return;
     }
