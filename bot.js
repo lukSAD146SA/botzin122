@@ -8,8 +8,6 @@ const {
 const fs = require('fs');
 const path = require('path');
 
-// 🔥 NÃO precisa mais de sharp ou canvas!
-
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -41,7 +39,16 @@ const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503";
 const CANAL_PAINEL_FIXO_ID = "1529916242843144312";
-const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797"; // Use o mesmo de logs mod
+const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797";
+
+// ========== IDs da configuração de permissões ==========
+const CATEGORIA_STAFF_ID = "1508506066051272825"; // categoria dos staffs (novatos NÃO veem)
+const CANAIS_PERMITIDOS_PARA_NOVATOS = [
+  "1509265302846705727",
+  "1509265663175299072",
+  "1509269400774115489", // ticket painel
+  "1508390560795197500"  // avisos
+];
 
 const CARGOS_MODERACAO = ["1508405150572871720"];
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000;
@@ -153,6 +160,60 @@ function lerConfig() {
 
 function salvarConfig(config) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+// =========================== FUNÇÃO CONFIGURAR PERMISSÕES DOS CANAIS ===========================
+async function configurarPermissoesCanais(guild) {
+  const config = lerConfig();
+  const cargoNaoVerificado = config.cargoNaoVerificado;
+  const cargoMembroVerificado = config.cargoMembroVerificado;
+
+  if (!cargoNaoVerificado || !cargoMembroVerificado) {
+    console.warn('[PERMISSÕES] Cargos de verificação não configurados. Use /verificacao configurar primeiro.');
+    return;
+  }
+
+  console.log('[PERMISSÕES] Configurando permissões dos canais...');
+  const canais = await guild.channels.fetch();
+  let atualizados = 0;
+
+  for (const [, canal] of canais) {
+    // Ignora categorias e canais de voz (opcional, mas podemos configurar também)
+    if (canal.type === ChannelType.GuildCategory) continue;
+
+    const naCategoriaStaff = canal.parentId === CATEGORIA_STAFF_ID;
+    const isPermitido = CANAIS_PERMITIDOS_PARA_NOVATOS.includes(canal.id);
+
+    // Lógica:
+    // - Se estiver na categoria staff OU não estiver na lista de permitidos → novato NÃO vê
+    // - Se estiver na lista de permitidos E não for categoria staff → novato VÊ
+    const novatoPodeVer = isPermitido && !naCategoriaStaff;
+
+    try {
+      // Configura permissão para o cargo de NÃO VERIFICADO
+      await canal.permissionOverwrites.edit(cargoNaoVerificado, {
+        ViewChannel: novatoPodeVer
+      });
+
+      // Configura permissão para o cargo de VERIFICADO (sempre pode ver)
+      await canal.permissionOverwrites.edit(cargoMembroVerificado, {
+        ViewChannel: true
+      });
+
+      // Também garante que @everyone não veja (para evitar conflitos)
+      // Mas se você quiser deixar @everyone com permissão padrão, pode remover essa parte
+      // await canal.permissionOverwrites.edit(guild.roles.everyone, {
+      //   ViewChannel: false
+      // });
+
+      atualizados++;
+    } catch (err) {
+      console.error(`[PERMISSÕES] Erro ao configurar canal ${canal.name}:`, err.message);
+    }
+  }
+
+  console.log(`[PERMISSÕES] ${atualizados} canais configurados.`);
+  return atualizados;
 }
 
 // =========================== OFUSCADOR ===========================
@@ -831,9 +892,7 @@ async function atualizarPainelFixo(guild) {
   console.log('[PAINEL FIXO] Painel atualizado.');
 }
 
-// =========================== SISTEMA DE VERIFICAÇÃO (PLANO B - SEM IMAGEM) ===========================
-
-// Gera um código de 4 letras (sem imagem)
+// =========================== SISTEMA DE VERIFICAÇÃO (TEXTO) ===========================
 function gerarCodigoVerificacao() {
   const letras = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let codigo = '';
@@ -857,11 +916,10 @@ async function iniciarVerificacao(user, guild) {
     return;
   }
   if (verificacoesPendentes[user.id]) {
-    await user.send('⏳ Você já tem um código de verificação pendente. Verifique suas mensagens privadas.').catch(() => {});
+    await user.send('⏳ Você já tem um código pendente. Verifique suas mensagens privadas.').catch(() => {});
     return;
   }
 
-  // Gera o código
   const codigo = gerarCodigoVerificacao();
   verificacoesPendentes[user.id] = {
     codigo,
@@ -869,13 +927,12 @@ async function iniciarVerificacao(user, guild) {
     timestamp: Date.now()
   };
 
-  // Envia o código por DM (texto puro)
   try {
     await user.send({
-      content: `🔐 **Verificação de segurança**\n\nSeu código de verificação é: **${codigo}**\n\nDigite este código exatamente como aparece (em maiúsculas) para ser verificado.\n\n*Você tem 3 tentativas.*`
+      content: `🔐 **Verificação de segurança**\n\nDigite o código abaixo no canal de boas-vindas para ser verificado.\n\n**Código:** \`${codigo}\`\n\n*Você tem 3 tentativas.*`
     });
   } catch (err) {
-    // Fallback: cria canal temporário
+    // Fallback: cria um canal temporário
     const canal = await guild.channels.create({
       name: `verificar-${user.username}`,
       type: ChannelType.GuildText,
@@ -887,7 +944,7 @@ async function iniciarVerificacao(user, guild) {
       ]
     });
     await canal.send({
-      content: `<@${user.id}> 🔐 **Verificação de segurança**\n\nSeu código de verificação é: **${codigo}**\n\nDigite este código exatamente como aparece (em maiúsculas).`
+      content: `<@${user.id}> 🔐 **Verificação de segurança**\n\nDigite o código abaixo para ser verificado.\n\n**Código:** \`${codigo}\``
     });
     verificacoesPendentes[user.id].canalId = canal.id;
   }
@@ -897,11 +954,13 @@ async function processarVerificacao(message) {
   const user = message.author;
   const pendente = verificacoesPendentes[user.id];
   if (!pendente) return false;
+
   if (pendente.tentativas >= 3) {
     delete verificacoesPendentes[user.id];
     await message.reply('❌ Você excedeu o número de tentativas. Solicite uma nova verificação clicando no botão novamente.');
     return true;
   }
+
   const resposta = message.content.trim().toUpperCase();
   if (resposta === pendente.codigo) {
     delete verificacoesPendentes[user.id];
@@ -917,7 +976,6 @@ async function processarVerificacao(message) {
         try {
           await member.roles.add(cargoMembro);
           await message.reply('✅ **Verificação concluída!** Você agora tem acesso total ao servidor.');
-          // Log de sucesso
           const logChannel = await message.guild.channels.fetch(CANAL_VERIFICACAO_LOGS_ID).catch(() => null);
           if (logChannel) {
             await logChannel.send({
@@ -1006,7 +1064,7 @@ client.on("guildMemberAdd", async (member) => {
     if (canal) {
       const embed = new EmbedBuilder()
         .setTitle('👋 Bem-vindo(a)!')
-        .setDescription(`Olá ${member.user}, seja bem-vindo ao servidor!\n\nPara ter acesso a todos os canais, clique no botão abaixo e **verifique-se**.\nVocê receberá um código por mensagem privada.`)
+        .setDescription(`Olá ${member.user}, seja bem-vindo ao servidor!\n\nPara ter acesso a todos os canais, clique no botão abaixo e **verifique-se**.\nVocê receberá um código de 4 letras no seu privado.`)
         .setColor('Green')
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
@@ -1755,6 +1813,8 @@ client.on("interactionCreate", async (interaction) => {
   // ========== VERIFICAÇÃO ==========
   if (interaction.commandName === 'verificacao') {
     const sub = interaction.options.getSubcommand();
+
+    // --- configurar ---
     if (sub === 'configurar') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode configurar.', flags: 64 });
       const cargoNaoVerificado = interaction.options.getRole('cargo-nao-verificado');
@@ -1772,6 +1832,8 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: resposta, flags: 64 });
       return;
     }
+
+    // --- painel ---
     if (sub === 'painel') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode enviar o painel.', flags: 64 });
       const config = lerConfig();
@@ -1793,6 +1855,61 @@ client.on("interactionCreate", async (interaction) => {
       );
       await canal.send({ embeds: [embed], components: [row] });
       await interaction.reply({ content: `✅ Painel de verificação enviado em ${canal}!`, flags: 64 });
+      return;
+    }
+
+    // --- configurar-permissoes ---
+    if (sub === 'configurar-permissoes') {
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar este comando.', flags: 64 });
+      await interaction.deferReply({ flags: 64 });
+      const config = lerConfig();
+      if (!config.cargoNaoVerificado || !config.cargoMembroVerificado) {
+        return interaction.editReply({ content: '❌ Cargos de verificação não configurados. Use `/verificacao configurar` primeiro.' });
+      }
+      const total = await configurarPermissoesCanais(interaction.guild);
+      await interaction.editReply({ content: `✅ Permissões configuradas em **${total}** canais!` });
+      return;
+    }
+
+    // --- dar-cargo-todos ---
+    if (sub === 'dar-cargo-todos') {
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar este comando.', flags: 64 });
+      await interaction.deferReply({ flags: 64 });
+      const config = lerConfig();
+      const cargoMembro = config.cargoMembroVerificado;
+      if (!cargoMembro) return interaction.editReply({ content: '❌ Cargo de membro verificado não configurado.' });
+      const members = await interaction.guild.members.fetch();
+      let count = 0;
+      for (const [, member] of members) {
+        if (!member.user.bot && !member.roles.cache.has(cargoMembro)) {
+          try {
+            await member.roles.add(cargoMembro);
+            count++;
+          } catch {}
+        }
+      }
+      await interaction.editReply({ content: `✅ Cargo verificado adicionado para **${count}** membros.` });
+      return;
+    }
+
+    // --- remover-cargo-nao-verificado ---
+    if (sub === 'remover-cargo-nao-verificado') {
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar este comando.', flags: 64 });
+      await interaction.deferReply({ flags: 64 });
+      const config = lerConfig();
+      const cargoNaoVerificado = config.cargoNaoVerificado;
+      if (!cargoNaoVerificado) return interaction.editReply({ content: '❌ Cargo de não verificado não configurado.' });
+      const members = await interaction.guild.members.fetch();
+      let count = 0;
+      for (const [, member] of members) {
+        if (!member.user.bot && member.roles.cache.has(cargoNaoVerificado)) {
+          try {
+            await member.roles.remove(cargoNaoVerificado);
+            count++;
+          } catch {}
+        }
+      }
+      await interaction.editReply({ content: `✅ Cargo não verificado removido de **${count}** membros.` });
       return;
     }
   }
@@ -2349,7 +2466,7 @@ client.once("ready", async () => {
       .addSubcommand(sub => sub.setName("enviar").setDescription("Reenvia o webhook com a configuração atual"))
       .addSubcommand(sub => sub.setName("configurar").setDescription("Configura o canal do painel fixo")
         .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde o painel fixo será enviado").setRequired(true).addChannelTypes(ChannelType.GuildText))),
-    // NOVO COMANDO DE VERIFICAÇÃO
+    // COMANDOS DE VERIFICAÇÃO (atualizados)
     new SlashCommandBuilder()
       .setName('verificacao')
       .setDescription('Gerencia o sistema de verificação')
@@ -2357,7 +2474,10 @@ client.once("ready", async () => {
         .addRoleOption(opt => opt.setName('cargo-nao-verificado').setDescription('Cargo para membros não verificados').setRequired(false))
         .addRoleOption(opt => opt.setName('cargo-membro').setDescription('Cargo para membros verificados').setRequired(false))
         .addChannelOption(opt => opt.setName('canal').setDescription('Canal onde o painel será enviado').setRequired(false).addChannelTypes(ChannelType.GuildText)))
-      .addSubcommand(sub => sub.setName('painel').setDescription('Envia o painel de verificação no canal configurado')),
+      .addSubcommand(sub => sub.setName('painel').setDescription('Envia o painel de verificação no canal configurado'))
+      .addSubcommand(sub => sub.setName('configurar-permissoes').setDescription('Configura as permissões de todos os canais (novato só vê canais permitidos)'))
+      .addSubcommand(sub => sub.setName('dar-cargo-todos').setDescription('Dá o cargo de verificado para todos os membros atuais'))
+      .addSubcommand(sub => sub.setName('remover-cargo-nao-verificado').setDescription('Remove o cargo de não verificado de todos os membros')),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -2371,6 +2491,15 @@ client.once("ready", async () => {
 
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
+    // Tenta configurar as permissões automaticamente se os cargos já estiverem configurados
+    const config = lerConfig();
+    if (config.cargoNaoVerificado && config.cargoMembroVerificado) {
+      console.log('[PERMISSÕES] Cargos configurados. Aplicando permissões...');
+      await configurarPermissoesCanais(guild);
+    } else {
+      console.warn('[PERMISSÕES] Cargos não configurados. Use /verificacao configurar e depois /verificacao configurar-permissoes.');
+    }
+
     await enviarPainelAvaliacao(guild);
     await enviarPainelFixo(guild);
     console.log("[PAINEL FIXO] Painel fixo enviado no ready.");
