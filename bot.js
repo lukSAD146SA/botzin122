@@ -42,7 +42,7 @@ const CANAL_PAINEL_FIXO_ID = "1529916242843144312";
 const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797";
 
 // ========== IDs da configuração de permissões ==========
-const CATEGORIA_STAFF_ID = "1508506066051272825"; // categoria que NINGUÉM (exceto staff) vê
+const CATEGORIA_STAFF_ID = "1508506066051272825";
 const CANAIS_PERMITIDOS_PARA_NOVATOS = [
   "1509265302846705727",
   "1509265663175299072",
@@ -162,7 +162,7 @@ function salvarConfig(config) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
-// =========================== FUNÇÃO CONFIGURAR PERMISSÕES DOS CANAIS (AJUSTADA) ===========================
+// =========================== FUNÇÃO CONFIGURAR PERMISSÕES DOS CANAIS ===========================
 async function configurarPermissoesCanais(guild) {
   const config = lerConfig();
   const cargoNaoVerificado = config.cargoNaoVerificado;
@@ -178,37 +178,23 @@ async function configurarPermissoesCanais(guild) {
   let atualizados = 0;
 
   for (const [, canal] of canais) {
-    // Pula categorias (não configuramos permissões em categorias, apenas em canais)
     if (canal.type === ChannelType.GuildCategory) continue;
 
     const naCategoriaStaff = canal.parentId === CATEGORIA_STAFF_ID;
     const isPermitido = CANAIS_PERMITIDOS_PARA_NOVATOS.includes(canal.id);
-
-    // Lógica ajustada:
-    // - Se estiver na categoria staff: NINGUÉM (exceto staff) vê. Ou seja, tanto novato quanto verificado NÃO veem.
-    // - Se NÃO estiver na categoria staff:
-    //    * Novato: só vê se estiver na lista de permitidos.
-    //    * Verificado: vê sempre (true).
-
     const novatoPodeVer = !naCategoriaStaff && isPermitido;
-    const verificadoPodeVer = !naCategoriaStaff; // verificado NÃO vê canais da categoria staff
+    const verificadoPodeVer = !naCategoriaStaff;
 
     try {
-      // Configura cargo NÃO VERIFICADO
       await canal.permissionOverwrites.edit(cargoNaoVerificado, {
         ViewChannel: novatoPodeVer
       });
-
-      // Configura cargo VERIFICADO
       await canal.permissionOverwrites.edit(cargoMembroVerificado, {
         ViewChannel: verificadoPodeVer
       });
-
-      // Também bloqueia @everyone para garantir que ninguém veja sem cargo
       await canal.permissionOverwrites.edit(guild.roles.everyone, {
         ViewChannel: false
       });
-
       atualizados++;
     } catch (err) {
       console.error(`[PERMISSÕES] Erro ao configurar canal ${canal.name}:`, err.message);
@@ -895,7 +881,7 @@ async function atualizarPainelFixo(guild) {
   console.log('[PAINEL FIXO] Painel atualizado.');
 }
 
-// =========================== SISTEMA DE VERIFICAÇÃO (MODAL) ===========================
+// =========================== SISTEMA DE VERIFICAÇÃO (EPHEMERAL + MODAL) ===========================
 function gerarCodigoVerificacao() {
   const letras = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let codigo = '';
@@ -905,64 +891,17 @@ function gerarCodigoVerificacao() {
   return codigo;
 }
 
-async function iniciarVerificacao(user, guild) {
-  const config = lerConfig();
-  const cargoMembro = config.cargoMembroVerificado;
-  if (!cargoMembro) {
-    await user.send('❌ O servidor não configurou o cargo de verificação. Contate um administrador.').catch(() => {});
-    return;
-  }
-  const member = await guild.members.fetch(user.id).catch(() => null);
-  if (!member) return;
-  if (member.roles.cache.has(cargoMembro)) {
-    await user.send('✅ Você já está verificado!').catch(() => {});
-    return;
-  }
-  if (verificacoesPendentes[user.id]) {
-    await user.send('⏳ Você já tem um código pendente. Verifique suas mensagens privadas.').catch(() => {});
-    return;
-  }
-
-  const codigo = gerarCodigoVerificacao();
-  verificacoesPendentes[user.id] = {
-    codigo,
-    tentativas: 0,
-    timestamp: Date.now()
-  };
-
-  try {
-    await user.send({
-      content: `🔐 **Verificação de segurança**\n\nDigite o código abaixo no formulário que aparecerá em seguida.\n\n**Código:** \`${codigo}\`\n\n*Você tem 3 tentativas.*`
-    });
-  } catch (err) {
-    const canal = await guild.channels.create({
-      name: `verificar-${user.username}`,
-      type: ChannelType.GuildText,
-      parent: CATEGORIA_TICKETS_ID,
-      permissionOverwrites: [
-        { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-        { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
-      ]
-    });
-    await canal.send({
-      content: `<@${user.id}> 🔐 **Verificação de segurança**\n\nDigite o código abaixo no formulário.\n\n**Código:** \`${codigo}\``
-    });
-    verificacoesPendentes[user.id].canalId = canal.id;
-  }
-}
-
 async function processarVerificacaoModal(interaction) {
   const user = interaction.user;
   const pendente = verificacoesPendentes[user.id];
   if (!pendente) {
-    await interaction.reply({ content: '❌ Você não tem nenhuma verificação pendente. Clique no botão "Iniciar Verificação" novamente.', ephemeral: true });
+    await interaction.reply({ content: '❌ Você não tem nenhuma verificação pendente. Clique em "Iniciar Verificação" novamente.', ephemeral: true });
     return;
   }
 
   if (pendente.tentativas >= 3) {
     delete verificacoesPendentes[user.id];
-    await interaction.reply({ content: '❌ Você excedeu o número de tentativas. Clique no botão "Iniciar Verificação" para tentar novamente.', ephemeral: true });
+    await interaction.reply({ content: '❌ Você excedeu o número de tentativas. Clique em "Iniciar Verificação" para tentar novamente.', ephemeral: true });
     return;
   }
 
@@ -1008,7 +947,7 @@ async function processarVerificacaoModal(interaction) {
     const restantes = 3 - pendente.tentativas;
     if (restantes === 0) {
       delete verificacoesPendentes[user.id];
-      await interaction.reply({ content: '❌ Você excedeu o número de tentativas. Clique no botão "Iniciar Verificação" para tentar novamente.', ephemeral: true });
+      await interaction.reply({ content: '❌ Você excedeu o número de tentativas. Clique em "Iniciar Verificação" para tentar novamente.', ephemeral: true });
     } else {
       await interaction.reply({ content: `❌ Código incorreto. Você tem **${restantes}** tentativa(s) restante(s).`, ephemeral: true });
     }
@@ -1068,7 +1007,7 @@ client.on("guildMemberAdd", async (member) => {
     if (canal) {
       const embed = new EmbedBuilder()
         .setTitle('👋 Bem-vindo(a)!')
-        .setDescription(`Olá ${member.user}, seja bem-vindo ao servidor!\n\nPara ter acesso a todos os canais, clique no botão abaixo e **verifique-se**.\nVocê receberá um código de 4 letras no seu privado.`)
+        .setDescription(`Olá ${member.user}, seja bem-vindo ao servidor!\n\nClique no botão abaixo para iniciar a verificação.\nVocê receberá um código no chat (apenas você verá).`)
         .setColor('Green')
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
@@ -1086,12 +1025,6 @@ client.on("guildMemberAdd", async (member) => {
 // ---- MENSAGENS (UNIFICADO) ----
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-
-  // Verificação por DM
-  if (message.channel.type === ChannelType.DM) {
-    // Se o usuário enviar algo na DM, ignoramos porque agora usamos modal
-    return;
-  }
 
   if (!message.guild) return;
   const member = message.member;
@@ -1328,9 +1261,70 @@ client.on("messageCreate", async (message) => {
 client.on("interactionCreate", async (interaction) => {
   // ---- BOTÕES ----
   if (interaction.isButton()) {
-    // Verificação - Botão geral
+    // ========== VERIFICAÇÃO - BOTÃO PRINCIPAL ==========
     if (interaction.customId === 'verificar_geral') {
-      // Abre o modal de verificação
+      const userId = interaction.user.id;
+      const config = lerConfig();
+      const cargoMembro = config.cargoMembroVerificado;
+
+      // Verifica se já está verificado
+      if (cargoMembro && interaction.member.roles.cache.has(cargoMembro)) {
+        return interaction.reply({ content: '✅ Você já está verificado!', ephemeral: true });
+      }
+
+      // Verifica se já tem pendente
+      if (verificacoesPendentes[userId]) {
+        return interaction.reply({ 
+          content: '⏳ Você já tem um código pendente. Verifique a mensagem anterior (só você vê).', 
+          ephemeral: true 
+        });
+      }
+
+      // Gera código
+      const codigo = gerarCodigoVerificacao();
+      verificacoesPendentes[userId] = {
+        codigo,
+        tentativas: 0,
+        timestamp: Date.now()
+      };
+
+      // Envia a mensagem ephemeral com o código + botão para abrir o modal
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('abrir_modal_codigo')
+          .setLabel('🔑 Digitar Código')
+          .setStyle(ButtonStyle.Primary)
+          .setEmoji('🔑')
+      );
+
+      await interaction.reply({
+        content: `🔐 **Seu código de verificação é:** \`${codigo}\`\n\nClique no botão abaixo para abrir o formulário e digitar o código.\n\n*Você tem 3 tentativas.*`,
+        components: [row],
+        ephemeral: true
+      });
+      return;
+    }
+
+    // ========== VERIFICAÇÃO - BOTÃO QUE ABRE O MODAL ==========
+    if (interaction.customId === 'abrir_modal_codigo') {
+      const userId = interaction.user.id;
+      const pendente = verificacoesPendentes[userId];
+      if (!pendente) {
+        return interaction.reply({ 
+          content: '❌ Você não tem nenhuma verificação pendente. Clique em "Iniciar Verificação" novamente.', 
+          ephemeral: true 
+        });
+      }
+
+      if (pendente.tentativas >= 3) {
+        delete verificacoesPendentes[userId];
+        return interaction.reply({ 
+          content: '❌ Você excedeu o número de tentativas. Clique em "Iniciar Verificação" para tentar novamente.', 
+          ephemeral: true 
+        });
+      }
+
+      // Abre o modal
       const modal = new ModalBuilder()
         .setCustomId('modal_verificacao')
         .setTitle('Verificação de Segurança');
@@ -1344,11 +1338,12 @@ client.on("interactionCreate", async (interaction) => {
         .setMinLength(4);
       const actionRow = new ActionRowBuilder().addComponents(codigoInput);
       modal.addComponents(actionRow);
+
       await interaction.showModal(modal);
       return;
     }
 
-    // Ticket: Dúvidas (formulário antigo)
+    // ---- Ticket: Dúvidas (formulário antigo) ----
     if (interaction.customId === "formulario_duvidas") {
       const select = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -1365,7 +1360,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Avaliação
+    // ---- Avaliação ----
     if (interaction.customId === "abrir_modal_avaliacao") {
       const modal = new ModalBuilder()
         .setCustomId("modal_avaliacao_staff")
@@ -1379,7 +1374,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Avaliação de ticket
+    // ---- Avaliação de ticket ----
     if (interaction.customId.startsWith("avaliacao_ticket_")) {
       const nota = parseInt(interaction.customId.split("_")[2]);
       const estrelas = "⭐".repeat(nota);
@@ -1401,7 +1396,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `✅ Obrigado pela avaliação! Você deu **${estrelas} (${nota}/5)**.`, embeds: [], components: [] });
     }
 
-    // Avaliação de chat
+    // ---- Avaliação de chat ----
     if (interaction.customId.startsWith("avaliacao_chat_")) {
       const partes = interaction.customId.split("_");
       const nota = parseInt(partes[2]);
@@ -1424,7 +1419,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `✅ Avaliação enviada! Você deu **${estrelas} (${nota}/5)**.`, embeds: [], components: [] });
     }
 
-    // Reivindicar ticket
+    // ---- Reivindicar ticket ----
     if (interaction.customId === "reivindicar_ticket") {
       const ticket = tickets[interaction.channel.id];
       if (!ticket) return interaction.reply({ content: "❌ Ticket não encontrado!", flags: 64 });
@@ -1458,7 +1453,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Fechar ticket
+    // ---- Fechar ticket ----
     if (interaction.customId === "fechar_ticket") {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 });
       const ticket = tickets[interaction.channel.id];
@@ -1486,7 +1481,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Deletar canal (confirmação)
+    // ---- Deletar canal (confirmação) ----
     if (interaction.customId.startsWith("confirmar_deletar_canal_")) {
       const canalId = interaction.customId.split("_")[3];
       const canal = await interaction.guild.channels.fetch(canalId).catch(() => null);
@@ -1518,7 +1513,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Ofuscador - escolha de chunks
+    // ---- Ofuscador - escolha de chunks ----
     if (interaction.customId.startsWith("chunks_")) {
       const chunks = parseInt(interaction.customId.split("_")[1]);
       const channelId = interaction.channel.id;
@@ -1543,7 +1538,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Giveaway - participar
+    // ---- Giveaway - participar ----
     if (interaction.customId.startsWith("giveaway_join_")) {
       const messageId = interaction.customId.replace("giveaway_join_", "");
       const giveaway = giveaways[messageId];
@@ -1570,7 +1565,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "Este giveaway já foi encerrado.", flags: 64 });
     }
 
-    // Formulário - Iniciar
+    // ---- Formulário - Iniciar ----
     if (interaction.customId === "formulario_iniciar") {
       const userId = interaction.user.id;
       for (const [channelId, estado] of Object.entries(formulariosPendentes)) {
@@ -1589,7 +1584,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Formulário - Confirmar
+    // ---- Formulário - Confirmar ----
     if (interaction.customId === "form_confirmar") {
       try {
         const estado = formulariosPendentes[interaction.channel.id];
@@ -1608,7 +1603,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Formulário - Cancelar
+    // ---- Formulário - Cancelar ----
     if (interaction.customId === "form_cancelar") {
       const estado = formulariosPendentes[interaction.channel.id];
       if (estado?.timeout) clearTimeout(estado.timeout);
@@ -1618,7 +1613,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Formulário - Aceitar Staff
+    // ---- Formulário - Aceitar Staff ----
     if (interaction.customId.startsWith("form_aceitar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1639,7 +1634,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Formulário - Recusar Staff
+    // ---- Formulário - Recusar Staff ----
     if (interaction.customId.startsWith("form_recusar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1660,7 +1655,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Webhook - Toggle executor
+    // ---- Webhook - Toggle executor ----
     if (interaction.customId.startsWith('exec_toggle_')) {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
       const id = interaction.customId.replace('exec_toggle_', '');
@@ -1675,7 +1670,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Webhook - Editar executor (abre modal)
+    // ---- Webhook - Editar executor (abre modal) ----
     if (interaction.customId.startsWith('exec_edit_')) {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
       const id = interaction.customId.replace('exec_edit_', '');
@@ -1694,7 +1689,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Webhook - Enviar
+    // ---- Webhook - Enviar ----
     if (interaction.customId === 'exec_enviar_webhook') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
       await interaction.reply({ content: '⏳ Enviando webhook...', flags: 64 });
@@ -1706,13 +1701,13 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- MODAIS ----
   if (interaction.isModalSubmit()) {
-    // Verificação (modal)
+    // ========== VERIFICAÇÃO - MODAL ==========
     if (interaction.customId === 'modal_verificacao') {
       await processarVerificacaoModal(interaction);
       return;
     }
 
-    // Avaliação
+    // ---- Avaliação ----
     if (interaction.customId === "modal_avaliacao_staff") {
       const staffName = interaction.fields.getTextInputValue("staff_name_input");
       const comment = interaction.fields.getTextInputValue("comment_input");
@@ -1741,7 +1736,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Webhook - Editar executor (modal)
+    // ---- Webhook - Editar executor (modal) ----
     if (interaction.customId.startsWith('exec_modal_')) {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
       const id = interaction.customId.replace('exec_modal_', '');
@@ -1770,7 +1765,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ---- SELECT MENU ----
+  // ---- SELECT MENU (ticket) ----
   if (interaction.isStringSelectMenu() && interaction.customId === "ticket_categoria") {
     const categoria = interaction.values[0];
     const userId = interaction.user.id;
@@ -1864,7 +1859,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!canal) return interaction.reply({ content: '❌ Canal configurado não encontrado.', flags: 64 });
       const embed = new EmbedBuilder()
         .setTitle('🔐 Verificação de Segurança')
-        .setDescription('Para ter acesso ao servidor, você precisa se verificar.\n\nClique no botão abaixo e siga as instruções no seu privado.')
+        .setDescription('Para ter acesso ao servidor, você precisa se verificar.\n\nClique no botão abaixo e siga as instruções no chat (apenas você verá o código).')
         .setColor('Blue')
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
@@ -2420,6 +2415,20 @@ client.once("ready", async () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
 
   const commands = [
+    // ========== COMANDOS DE VERIFICAÇÃO ==========
+    new SlashCommandBuilder()
+      .setName('verificacao')
+      .setDescription('Gerencia o sistema de verificação')
+      .addSubcommand(sub => sub.setName('configurar').setDescription('Configura os cargos e canal de verificação')
+        .addRoleOption(opt => opt.setName('cargo-nao-verificado').setDescription('Cargo para membros não verificados').setRequired(false))
+        .addRoleOption(opt => opt.setName('cargo-membro').setDescription('Cargo para membros verificados').setRequired(false))
+        .addChannelOption(opt => opt.setName('canal').setDescription('Canal onde o painel será enviado').setRequired(false).addChannelTypes(ChannelType.GuildText)))
+      .addSubcommand(sub => sub.setName('painel').setDescription('Envia o painel de verificação no canal configurado'))
+      .addSubcommand(sub => sub.setName('configurar-permissoes').setDescription('Configura as permissões de todos os canais (novato e verificado NÃO veem categoria staff)'))
+      .addSubcommand(sub => sub.setName('dar-cargo-todos').setDescription('Dá o cargo de verificado para todos os membros atuais'))
+      .addSubcommand(sub => sub.setName('remover-cargo-nao-verificado').setDescription('Remove o cargo de não verificado de todos os membros')),
+
+    // ========== COMANDOS ORIGINAIS ==========
     new SlashCommandBuilder().setName("say").setDescription("Faz o bot enviar uma mensagem")
       .addStringOption(opt => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true))
       .addChannelOption(opt => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
@@ -2487,18 +2496,6 @@ client.once("ready", async () => {
       .addSubcommand(sub => sub.setName("enviar").setDescription("Reenvia o webhook com a configuração atual"))
       .addSubcommand(sub => sub.setName("configurar").setDescription("Configura o canal do painel fixo")
         .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde o painel fixo será enviado").setRequired(true).addChannelTypes(ChannelType.GuildText))),
-    // COMANDOS DE VERIFICAÇÃO
-    new SlashCommandBuilder()
-      .setName('verificacao')
-      .setDescription('Gerencia o sistema de verificação')
-      .addSubcommand(sub => sub.setName('configurar').setDescription('Configura os cargos e canal de verificação')
-        .addRoleOption(opt => opt.setName('cargo-nao-verificado').setDescription('Cargo para membros não verificados').setRequired(false))
-        .addRoleOption(opt => opt.setName('cargo-membro').setDescription('Cargo para membros verificados').setRequired(false))
-        .addChannelOption(opt => opt.setName('canal').setDescription('Canal onde o painel será enviado').setRequired(false).addChannelTypes(ChannelType.GuildText)))
-      .addSubcommand(sub => sub.setName('painel').setDescription('Envia o painel de verificação no canal configurado'))
-      .addSubcommand(sub => sub.setName('configurar-permissoes').setDescription('Configura as permissões de todos os canais (novato e verificado NÃO veem categoria staff)'))
-      .addSubcommand(sub => sub.setName('dar-cargo-todos').setDescription('Dá o cargo de verificado para todos os membros atuais'))
-      .addSubcommand(sub => sub.setName('remover-cargo-nao-verificado').setDescription('Remove o cargo de não verificado de todos os membros')),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
