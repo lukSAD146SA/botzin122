@@ -7,7 +7,8 @@ const {
 } = require("discord.js");
 const fs = require('fs');
 const path = require('path');
-const sharp = require('sharp'); // <-- SUBSTITUÍDO canvas por sharp
+
+// 🔥 NÃO precisa mais de sharp ou canvas!
 
 const client = new Client({
   intents: [
@@ -830,50 +831,16 @@ async function atualizarPainelFixo(guild) {
   console.log('[PAINEL FIXO] Painel atualizado.');
 }
 
-// =========================== SISTEMA DE VERIFICAÇÃO (CAPTCHA) ===========================
-// FUNÇÃO GERAR CAPTCHA – VERSÃO COM SHARP
-function gerarCaptcha() {
+// =========================== SISTEMA DE VERIFICAÇÃO (PLANO B - SEM IMAGEM) ===========================
+
+// Gera um código de 4 letras (sem imagem)
+function gerarCodigoVerificacao() {
   const letras = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let codigo = '';
   for (let i = 0; i < 4; i++) {
     codigo += letras.charAt(Math.floor(Math.random() * letras.length));
   }
-
-  // Cria um SVG com as letras, ruído e linhas
-  const chars = codigo.split('');
-  let svgContent = `<svg width="280" height="100" xmlns="http://www.w3.org/2000/svg">
-    <rect width="280" height="100" fill="#f0f0f0"/>`;
-
-  const cores = ['#2c3e50', '#e74c3c', '#2980b9', '#27ae60'];
-  chars.forEach((char, i) => {
-    const x = 30 + i * 65;
-    const rotacao = (Math.random() - 0.5) * 30;
-    const cor = cores[i % cores.length];
-    svgContent += `<text x="${x}" y="65" font-family="Arial" font-size="44" font-weight="bold" fill="${cor}" text-anchor="middle" transform="rotate(${rotacao}, ${x}, 65)">${char}</text>`;
-  });
-
-  // Linhas de distorção
-  for (let i = 0; i < 6; i++) {
-    const x1 = Math.random() * 280;
-    const y1 = Math.random() * 100;
-    const x2 = Math.random() * 280;
-    const y2 = Math.random() * 100;
-    svgContent += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(0,0,0,0.3)" stroke-width="1.5"/>`;
-  }
-
-  // Pontos de ruído
-  for (let i = 0; i < 40; i++) {
-    const x = Math.random() * 280;
-    const y = Math.random() * 100;
-    svgContent += `<circle cx="${x}" cy="${y}" r="1.5" fill="rgba(0,0,0,0.2)"/>`;
-  }
-
-  svgContent += `</svg>`;
-
-  // Converte SVG para PNG usando sharp
-  const buffer = sharp(Buffer.from(svgContent)).png().toBufferSync();
-
-  return { buffer, codigo };
+  return codigo;
 }
 
 async function iniciarVerificacao(user, guild) {
@@ -890,22 +857,25 @@ async function iniciarVerificacao(user, guild) {
     return;
   }
   if (verificacoesPendentes[user.id]) {
-    await user.send('⏳ Você já tem um CAPTCHA pendente. Verifique suas mensagens privadas.').catch(() => {});
+    await user.send('⏳ Você já tem um código de verificação pendente. Verifique suas mensagens privadas.').catch(() => {});
     return;
   }
-  const { buffer, codigo } = gerarCaptcha();
-  const attachment = new AttachmentBuilder(buffer, { name: 'captcha.png' });
+
+  // Gera o código
+  const codigo = gerarCodigoVerificacao();
   verificacoesPendentes[user.id] = {
     codigo,
     tentativas: 0,
     timestamp: Date.now()
   };
+
+  // Envia o código por DM (texto puro)
   try {
     await user.send({
-      content: '🔐 **Verificação de segurança**\n\nDigite as **4 letras** que aparecem na imagem abaixo para ser verificado.\n\n*Você tem 3 tentativas.*',
-      files: [attachment]
+      content: `🔐 **Verificação de segurança**\n\nSeu código de verificação é: **${codigo}**\n\nDigite este código exatamente como aparece (em maiúsculas) para ser verificado.\n\n*Você tem 3 tentativas.*`
     });
   } catch (err) {
+    // Fallback: cria canal temporário
     const canal = await guild.channels.create({
       name: `verificar-${user.username}`,
       type: ChannelType.GuildText,
@@ -917,8 +887,7 @@ async function iniciarVerificacao(user, guild) {
       ]
     });
     await canal.send({
-      content: `<@${user.id}> 🔐 **Verificação de segurança**\n\nDigite as **4 letras** da imagem abaixo para ser verificado.`,
-      files: [attachment]
+      content: `<@${user.id}> 🔐 **Verificação de segurança**\n\nSeu código de verificação é: **${codigo}**\n\nDigite este código exatamente como aparece (em maiúsculas).`
     });
     verificacoesPendentes[user.id].canalId = canal.id;
   }
@@ -1037,7 +1006,7 @@ client.on("guildMemberAdd", async (member) => {
     if (canal) {
       const embed = new EmbedBuilder()
         .setTitle('👋 Bem-vindo(a)!')
-        .setDescription(`Olá ${member.user}, seja bem-vindo ao servidor!\n\nPara ter acesso a todos os canais, clique no botão abaixo e **verifique-se**.\nVocê receberá uma imagem com 4 letras no seu privado.`)
+        .setDescription(`Olá ${member.user}, seja bem-vindo ao servidor!\n\nPara ter acesso a todos os canais, clique no botão abaixo e **verifique-se**.\nVocê receberá um código por mensagem privada.`)
         .setColor('Green')
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
