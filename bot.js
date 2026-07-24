@@ -7,7 +7,7 @@ const {
 } = require("discord.js");
 const fs = require('fs');
 const path = require('path');
-const { createCanvas } = require('canvas');
+const sharp = require('sharp'); // <-- SUBSTITUÍDO canvas por sharp
 
 const client = new Client({
   intents: [
@@ -40,12 +40,10 @@ const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503";
 const CANAL_PAINEL_FIXO_ID = "1529916242843144312";
-
-// ========== NOVO: canal de logs da verificação ==========
-const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797"; // Use o mesmo de logs mod ou crie um específico
+const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797"; // Use o mesmo de logs mod
 
 const CARGOS_MODERACAO = ["1508405150572871720"];
-const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutos
+const INACTIVITY_TIMEOUT = 5 * 60 * 1000;
 
 // =========================== DADOS EM MEMÓRIA ===========================
 const tickets = {};
@@ -833,44 +831,49 @@ async function atualizarPainelFixo(guild) {
 }
 
 // =========================== SISTEMA DE VERIFICAÇÃO (CAPTCHA) ===========================
+// FUNÇÃO GERAR CAPTCHA – VERSÃO COM SHARP
 function gerarCaptcha() {
   const letras = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let codigo = '';
   for (let i = 0; i < 4; i++) {
     codigo += letras.charAt(Math.floor(Math.random() * letras.length));
   }
-  const canvas = createCanvas(280, 100);
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#f0f0f0';
-  ctx.fillRect(0, 0, 280, 100);
-  for (let i = 0; i < 30; i++) {
-    ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.2})`;
-    ctx.fillRect(Math.random() * 280, Math.random() * 100, 2, 2);
-  }
+
+  // Cria um SVG com as letras, ruído e linhas
   const chars = codigo.split('');
-  const tamanhos = [48, 44, 50, 46];
+  let svgContent = `<svg width="280" height="100" xmlns="http://www.w3.org/2000/svg">
+    <rect width="280" height="100" fill="#f0f0f0"/>`;
+
   const cores = ['#2c3e50', '#e74c3c', '#2980b9', '#27ae60'];
   chars.forEach((char, i) => {
     const x = 30 + i * 65;
-    const y = 60 + (Math.random() * 10 - 5);
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate((Math.random() - 0.5) * 0.6);
-    ctx.font = `bold ${tamanhos[i]}px Arial`;
-    ctx.fillStyle = cores[i % cores.length];
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(char, 0, 0);
-    ctx.restore();
+    const rotacao = (Math.random() - 0.5) * 30;
+    const cor = cores[i % cores.length];
+    svgContent += `<text x="${x}" y="65" font-family="Arial" font-size="44" font-weight="bold" fill="${cor}" text-anchor="middle" transform="rotate(${rotacao}, ${x}, 65)">${char}</text>`;
   });
+
+  // Linhas de distorção
   for (let i = 0; i < 6; i++) {
-    ctx.beginPath();
-    ctx.moveTo(Math.random() * 280, Math.random() * 100);
-    ctx.lineTo(Math.random() * 280, Math.random() * 100);
-    ctx.strokeStyle = `rgba(0,0,0,${Math.random() * 0.3})`;
-    ctx.stroke();
+    const x1 = Math.random() * 280;
+    const y1 = Math.random() * 100;
+    const x2 = Math.random() * 280;
+    const y2 = Math.random() * 100;
+    svgContent += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(0,0,0,0.3)" stroke-width="1.5"/>`;
   }
-  return { buffer: canvas.toBuffer(), codigo };
+
+  // Pontos de ruído
+  for (let i = 0; i < 40; i++) {
+    const x = Math.random() * 280;
+    const y = Math.random() * 100;
+    svgContent += `<circle cx="${x}" cy="${y}" r="1.5" fill="rgba(0,0,0,0.2)"/>`;
+  }
+
+  svgContent += `</svg>`;
+
+  // Converte SVG para PNG usando sharp
+  const buffer = sharp(Buffer.from(svgContent)).png().toBufferSync();
+
+  return { buffer, codigo };
 }
 
 async function iniciarVerificacao(user, guild) {
