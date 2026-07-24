@@ -41,6 +41,9 @@ const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503";
 const CANAL_PAINEL_FIXO_ID = "1529916242843144312";
 
+// ========== NOVO: canal de logs da verificação ==========
+const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797"; // Use o mesmo de logs mod ou crie um específico
+
 const CARGOS_MODERACAO = ["1508405150572871720"];
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutos
 
@@ -53,8 +56,8 @@ const formulariosPendentes = {};
 const formulariosEnviados = {};
 const giveaways = {};
 const avaliacoesPendentes = {};
-const verificacoesPendentes = {};      // { userId: { codigo, tentativas, timestamp, canalId? } }
-const mensagensRecentes = {};          // { userId: [ { content, channelId, timestamp } ] }
+const verificacoesPendentes = {};
+const mensagensRecentes = {};
 const monitoramentoAtividade = { contagem: 0, ultimoReset: Date.now() };
 
 // =========================== PALAVRAS PROIBIDAS ===========================
@@ -942,6 +945,18 @@ async function processarVerificacao(message) {
         try {
           await member.roles.add(cargoMembro);
           await message.reply('✅ **Verificação concluída!** Você agora tem acesso total ao servidor.');
+          // Log de sucesso
+          const logChannel = await message.guild.channels.fetch(CANAL_VERIFICACAO_LOGS_ID).catch(() => null);
+          if (logChannel) {
+            await logChannel.send({
+              embeds: [new EmbedBuilder()
+                .setTitle('✅ Verificação Bem-Sucedida')
+                .setColor('Green')
+                .addFields({ name: 'Usuário', value: `${user.tag} (${user.id})` })
+                .setTimestamp()
+              ]
+            });
+          }
           if (pendente.canalId) {
             const canal = await message.guild.channels.fetch(pendente.canalId).catch(() => null);
             if (canal) await canal.delete().catch(() => {});
@@ -2295,7 +2310,6 @@ client.once("ready", async () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
 
   const commands = [
-    // Comandos existentes
     new SlashCommandBuilder().setName("say").setDescription("Faz o bot enviar uma mensagem")
       .addStringOption(opt => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true))
       .addChannelOption(opt => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
