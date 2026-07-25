@@ -15,18 +15,16 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildVoiceStates, // necessário para status de voz
+    GatewayIntentBits.GuildVoiceStates,
   ],
 });
 
-// =========================== TOKEN ===========================
 const TOKEN = process.env.TOKEN;
 if (!TOKEN) {
   console.error("❌ TOKEN não encontrado! Defina a variável de ambiente TOKEN.");
   process.exit(1);
 }
 
-// =========================== CONFIGURAÇÕES FIXAS ===========================
 const GUILD_ID = "1508302017980924064";
 const CANAL_SUGESTOES_ID = "1511518813701804062";
 const CANAL_LOGS_MOD_ID = "1523437994848157797";
@@ -39,8 +37,6 @@ const CARGO_SUPORTE_ID = "1513399309306036355";
 const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797";
-
-// ========== IDs da configuração de permissões ==========
 const CATEGORIA_STAFF_ID = "1508506066051272825";
 const CANAIS_PERMITIDOS_PARA_NOVATOS = [
   "1509265302846705727",
@@ -48,22 +44,20 @@ const CANAIS_PERMITIDOS_PARA_NOVATOS = [
   "1509269400774115489",
   "1508390560795197500"
 ];
-
 const CARGOS_MODERACAO = ["1508405150572871720"];
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000;
 
-// =========================== DADOS EM MEMÓRIA ===========================
-const tickets = {};             // ticketId -> { userId, categoria, staffId, staffTag, abertura, respostas: {}, etapa: 0 }
+const tickets = {};
 const formulariosPendentes = {};
 const formulariosEnviados = {};
 const avaliacoesPendentes = {};
 const verificacoesPendentes = {};
 const mensagensRecentes = {};
 const monitoramentoAtividade = { contagem: 0, ultimoReset: Date.now() };
-const statusChannelId = { channel: null, messageId: null };  // para o painel de status
+const statusChannelId = { channel: null, messageId: null };
+const voiceChannels = {};
 
-// =========================== PALAVRAS PROIBIDAS (AGORA COM REGEX) ===========================
-// A lista de palavras será usada para construir regex com \b para casar palavras inteiras.
+// =========================== PALAVRAS PROIBIDAS (REGEX) ===========================
 const PALAVRAS_PROIBIDAS_BASE = [
   "entra no meu servidor", "meu servidor", "meu discord", "meu server",
   "link da bio", "link na bio", "bio",
@@ -80,18 +74,11 @@ const PALAVRAS_GRAVES_BASE = [
   "vendas", "venda", "vender",
 ];
 
-// Construção de regex para palavras inteiras (case insensitive)
 function construirRegex(palavras) {
-  // Escapa caracteres especiais
   const escaped = palavras.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  // Junta com \b para bordas de palavra, tratando frases com espaços como uma única palavra composta
-  // Para frases, usamos lookahead? Melhor: separar por espaços e casar cada palavra?
-  // Para simplicidade, vamos casar cada palavra individualmente, mas com \b para bordas.
-  // Para frases como "entra no meu servidor", vamos dividir em palavras e casar cada uma com \b.
   const palavrasIndividuais = [];
   for (const p of escaped) {
     if (p.includes(' ')) {
-      // Divide em palavras e adiciona cada uma
       const partes = p.split(' ');
       for (const part of partes) {
         if (part.length > 2) palavrasIndividuais.push(part);
@@ -100,9 +87,7 @@ function construirRegex(palavras) {
       palavrasIndividuais.push(p);
     }
   }
-  // Remove duplicatas
   const unicas = [...new Set(palavrasIndividuais)];
-  // Cria regex com boundaries
   return new RegExp('\\b(' + unicas.join('|') + ')\\b', 'gi');
 }
 
@@ -166,6 +151,10 @@ function lerConfig() {
     if (!config.cargoMembroVerificado) config.cargoMembroVerificado = null;
     if (!config.canalVerificacao) config.canalVerificacao = null;
     if (!config.canalStatus) config.canalStatus = null;
+    if (!config.categoriaCall) config.categoriaCall = null;
+    if (!config.canalLogCall) config.canalLogCall = null;
+    if (!config.botMusicaId) config.botMusicaId = null;
+    if (!config.canalPainelCall) config.canalPainelCall = null;
     return config;
   } catch {
     return {
@@ -174,7 +163,11 @@ function lerConfig() {
       cargoNaoVerificado: null,
       cargoMembroVerificado: null,
       canalVerificacao: null,
-      canalStatus: null
+      canalStatus: null,
+      categoriaCall: null,
+      canalLogCall: null,
+      botMusicaId: null,
+      canalPainelCall: null
     };
   }
 }
@@ -183,14 +176,14 @@ function salvarConfig(config) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
-// =========================== FUNÇÃO CONFIGURAR PERMISSÕES DOS CANAIS ===========================
+// =========================== FUNÇÃO CONFIGURAR PERMISSÕES ===========================
 async function configurarPermissoesCanais(guild) {
   const config = lerConfig();
   const cargoNaoVerificado = config.cargoNaoVerificado;
   const cargoMembroVerificado = config.cargoMembroVerificado;
 
   if (!cargoNaoVerificado || !cargoMembroVerificado) {
-    console.warn('[PERMISSÕES] Cargos de verificação não configurados. Use /verificacao configurar primeiro.');
+    console.warn('[PERMISSÕES] Cargos de verificação não configurados.');
     return 0;
   }
 
@@ -200,22 +193,15 @@ async function configurarPermissoesCanais(guild) {
 
   for (const [, canal] of canais) {
     if (canal.type === ChannelType.GuildCategory) continue;
-
     const naCategoriaStaff = canal.parentId === CATEGORIA_STAFF_ID;
     const isPermitido = CANAIS_PERMITIDOS_PARA_NOVATOS.includes(canal.id);
     const novatoPodeVer = !naCategoriaStaff && isPermitido;
     const verificadoPodeVer = !naCategoriaStaff;
 
     try {
-      await canal.permissionOverwrites.edit(cargoNaoVerificado, {
-        ViewChannel: novatoPodeVer
-      });
-      await canal.permissionOverwrites.edit(cargoMembroVerificado, {
-        ViewChannel: verificadoPodeVer
-      });
-      await canal.permissionOverwrites.edit(guild.roles.everyone, {
-        ViewChannel: false
-      });
+      await canal.permissionOverwrites.edit(cargoNaoVerificado, { ViewChannel: novatoPodeVer });
+      await canal.permissionOverwrites.edit(cargoMembroVerificado, { ViewChannel: verificadoPodeVer });
+      await canal.permissionOverwrites.edit(guild.roles.everyone, { ViewChannel: false });
       atualizados++;
     } catch (err) {
       console.error(`[PERMISSÕES] Erro ao configurar canal ${canal.name}:`, err.message);
@@ -283,65 +269,14 @@ async function enviarPainelAvaliacao(guild) {
 
 // =========================== PERGUNTAS DO FORMULÁRIO DE STAFF ===========================
 const PERGUNTAS = [
-  {
-    id: 'nome',
-    label: 'Qual o seu nome completo?',
-    placeholder: 'Ex: João Silva',
-    required: true,
-    minLength: 3,
-    maxLength: 60
-  },
-  {
-    id: 'idade',
-    label: 'Quantos anos você tem?',
-    placeholder: 'Ex: 18',
-    required: true,
-    minLength: 1,
-    maxLength: 3
-  },
-  {
-    id: 'discord',
-    label: 'Qual seu Discord (com tag)?',
-    placeholder: 'Ex: João#1234',
-    required: true,
-    minLength: 5,
-    maxLength: 40
-  },
-  {
-    id: 'experiencia',
-    label: 'Você já foi staff em algum outro servidor? Se sim, onde e por quanto tempo?',
-    placeholder: 'Descreva sua experiência anterior...',
-    required: true,
-    maxLength: 500
-  },
-  {
-    id: 'disponibilidade',
-    label: 'Quantas horas por dia, em média, você consegue ficar online?',
-    placeholder: 'Ex: 4 horas',
-    required: true,
-    maxLength: 30
-  },
-  {
-    id: 'motivacao',
-    label: 'Por que você quer ser staff aqui?',
-    placeholder: 'Explique sua motivação...',
-    required: true,
-    maxLength: 500
-  },
-  {
-    id: 'habilidades',
-    label: 'Você tem conhecimento em moderação (comandos, bots, etc.)? Descreva.',
-    placeholder: 'Ex: Sei usar os comandos de mute, kick, ban, conheço bots de moderação...',
-    required: true,
-    maxLength: 500
-  },
-  {
-    id: 'cenario',
-    label: 'Como você reagiria se um membro estivesse desrespeitando as regras repetidamente?',
-    placeholder: 'Descreva sua abordagem...',
-    required: true,
-    maxLength: 500
-  }
+  { id: 'nome', label: 'Qual o seu nome completo?', placeholder: 'Ex: João Silva', required: true, minLength: 3, maxLength: 60 },
+  { id: 'idade', label: 'Quantos anos você tem?', placeholder: 'Ex: 18', required: true, minLength: 1, maxLength: 3 },
+  { id: 'discord', label: 'Qual seu Discord (com tag)?', placeholder: 'Ex: João#1234', required: true, minLength: 5, maxLength: 40 },
+  { id: 'experiencia', label: 'Você já foi staff em algum outro servidor? Se sim, onde e por quanto tempo?', placeholder: 'Descreva sua experiência...', required: true, maxLength: 500 },
+  { id: 'disponibilidade', label: 'Quantas horas por dia, em média, você consegue ficar online?', placeholder: 'Ex: 4 horas', required: true, maxLength: 30 },
+  { id: 'motivacao', label: 'Por que você quer ser staff aqui?', placeholder: 'Explique sua motivação...', required: true, maxLength: 500 },
+  { id: 'habilidades', label: 'Você tem conhecimento em moderação (comandos, bots, etc.)? Descreva.', placeholder: 'Ex: Sei usar os comandos...', required: true, maxLength: 500 },
+  { id: 'cenario', label: 'Como você reagiria se um membro estivesse desrespeitando as regras repetidamente?', placeholder: 'Descreva sua abordagem...', required: true, maxLength: 500 }
 ];
 
 // =========================== FUNÇÕES DO FORMULÁRIO DE STAFF ===========================
@@ -349,7 +284,7 @@ async function enviarPainelFormulario(guild) {
   const config = lerConfig();
   const canalId = config.canalFormulario;
   if (!canalId) {
-    console.warn('[FORM] Canal do formulário não configurado. Use /formulario configurar.');
+    console.warn('[FORM] Canal do formulário não configurado.');
     return;
   }
   const canal = await guild.channels.fetch(canalId).catch(() => null);
@@ -373,7 +308,7 @@ async function enviarPainelFormulario(guild) {
     )
     .setColor('Blue')
     .setImage('https://i.imgur.com/tov858d.png')
-    .setFooter({ text: 'Script do Zé • Recrutamento • Todos os direitos reservados' })
+    .setFooter({ text: 'Script do Zé • Recrutamento' })
     .setTimestamp();
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -484,20 +419,10 @@ async function mostrarResumo(channel, userId) {
     .setFooter({ text: 'Confirme ou cancele o envio.' })
     .setTimestamp();
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('form_confirmar')
-      .setLabel('✅ Confirmar e Enviar')
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId('form_cancelar')
-      .setLabel('❌ Cancelar')
-      .setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId('form_confirmar').setLabel('✅ Confirmar e Enviar').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('form_cancelar').setLabel('❌ Cancelar').setStyle(ButtonStyle.Danger)
   );
-  const msg = await channel.send({
-    content: `<@${userId}>`,
-    embeds: [embed],
-    components: [row]
-  });
+  const msg = await channel.send({ content: `<@${userId}>`, embeds: [embed], components: [row] });
   estado.mensagemId = msg.id;
 }
 
@@ -517,21 +442,11 @@ async function enviarRespostaStaff(userId, respostas, guild) {
     embed.addFields({ name: pergunta.label, value: respostas[pergunta.id] || 'Não informado', inline: false });
   }
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`form_aceitar_${userId}`)
-      .setLabel('✅ Aceitar Staff')
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(`form_recusar_${userId}`)
-      .setLabel('❌ Recusar Staff')
-      .setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId(`form_aceitar_${userId}`).setLabel('✅ Aceitar Staff').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`form_recusar_${userId}`).setLabel('❌ Recusar Staff').setStyle(ButtonStyle.Danger)
   );
-  await canalStaff.send({
-    content: `🔔 Nova candidatura de <@${userId}>!`,
-    embeds: [embed],
-    components: [row]
-  });
-  console.log(`[FORM] Candidatura de ${userId} enviada ao canal staff.`);
+  await canalStaff.send({ content: `🔔 Nova candidatura de <@${userId}>!`, embeds: [embed], components: [row] });
+  console.log(`[FORM] Candidatura de ${userId} enviada.`);
 }
 
 // =========================== SISTEMA DE WEBHOOK (EXECUTORES) ===========================
@@ -543,14 +458,10 @@ function carregarExecutores() {
     const padrao = {
       webhookURL: 'https://discord.com/api/webhooks/1519217665498021958/gV-6bHq1nGbnzvB0rPMXEAinzQAjLTaZtJvEm6IbXHCRrAnnx0vWE7jynpZcD6HqUkes',
       avatarURL: 'https://cdn.discordapp.com/icons/1508302017980924064/4e99cb3869df3a62beb943e9d14861e7.png?size=2048',
-      canalPainelFixo: CANAL_PAINEL_FIXO_ID,
+      canalPainelFixo: '1529916242843144312',
       executores: [
         {
-          id: 'ronix',
-          nome: 'Ronix',
-          corAtivo: '#2ecc71',
-          corInativo: '#e74c3c',
-          ativo: true,
+          id: 'ronix', nome: 'Ronix', corAtivo: '#2ecc71', corInativo: '#e74c3c', ativo: true,
           thumbnail: 'https://cdn.discordapp.com/emojis/1509291842288746576.png?size=128',
           campos: [
             { name: 'Key-System', value: 'Sem key 🔑', inline: true },
@@ -560,11 +471,7 @@ function carregarExecutores() {
           ]
         },
         {
-          id: 'medium',
-          nome: 'Medium',
-          corAtivo: '#2ecc71',
-          corInativo: '#e74c3c',
-          ativo: true,
+          id: 'medium', nome: 'Medium', corAtivo: '#2ecc71', corInativo: '#e74c3c', ativo: true,
           thumbnail: 'https://cdn.discordapp.com/emojis/1509291686730404063.png?size=128',
           campos: [
             { name: 'Key-System', value: 'Sem key 🔑', inline: true },
@@ -574,11 +481,7 @@ function carregarExecutores() {
           ]
         },
         {
-          id: 'vortex',
-          nome: 'Vortex',
-          corAtivo: '#2ecc71',
-          corInativo: '#e74c3c',
-          ativo: true,
+          id: 'vortex', nome: 'Vortex', corAtivo: '#2ecc71', corInativo: '#e74c3c', ativo: true,
           thumbnail: 'https://cdn.discordapp.com/emojis/1515117448351977574.png?size=128',
           campos: [
             { name: 'Key-System', value: 'Possui key 🔑', inline: true },
@@ -587,11 +490,7 @@ function carregarExecutores() {
           ]
         },
         {
-          id: 'velocity',
-          nome: 'Velocity',
-          corAtivo: '#2ecc71',
-          corInativo: '#e74c3c',
-          ativo: true,
+          id: 'velocity', nome: 'Velocity', corAtivo: '#2ecc71', corInativo: '#e74c3c', ativo: true,
           thumbnail: 'https://cdn.discordapp.com/emojis/1509293220167815269.png?size=128',
           campos: [
             { name: 'Key-System', value: 'Possui key 🔑', inline: true },
@@ -632,7 +531,7 @@ async function enviarWebhookExecutores(guild) {
   });
   const payload = {
     username: 'Executores PC • Script do Zé',
-    avatar_url: avatarURL || 'https://cdn.discordapp.com/icons/1508302017980924064/4e99cb3869df3a62beb943e9d14861e7.png?size=2048',
+    avatar_url: avatarURL,
     embeds: embeds
   };
   try {
@@ -641,14 +540,9 @@ async function enviarWebhookExecutores(guild) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    if (response.ok) {
-      console.log('[WEBHOOK] Painel enviado com sucesso!');
-    } else {
-      console.error('[WEBHOOK] Erro ao enviar:', response.status, await response.text());
-    }
-  } catch (err) {
-    console.error('[WEBHOOK] Erro ao enviar:', err);
-  }
+    if (response.ok) console.log('[WEBHOOK] Painel enviado com sucesso!');
+    else console.error('[WEBHOOK] Erro ao enviar:', response.status);
+  } catch (err) { console.error('[WEBHOOK] Erro:', err); }
 }
 
 async function enviarPainelFixo(guild) {
@@ -665,7 +559,7 @@ async function enviarPainelFixo(guild) {
   const { executores } = config;
   const embed = new EmbedBuilder()
     .setTitle('📊 Painel de Executores')
-    .setDescription('Gerencie os executores que aparecem no webhook. Clique nos botões abaixo para ativar/desativar ou editar.')
+    .setDescription('Gerencie os executores que aparecem no webhook.')
     .setColor('Blue')
     .setTimestamp();
   let desc = '';
@@ -678,31 +572,16 @@ async function enviarPainelFixo(guild) {
   for (const ex of executores) {
     const row = new ActionRowBuilder()
       .addComponents(
-        new ButtonBuilder()
-          .setCustomId(`exec_toggle_${ex.id}`)
-          .setLabel(ex.ativo ? '❌ Desativar' : '✅ Ativar')
-          .setStyle(ex.ativo ? ButtonStyle.Danger : ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`exec_edit_${ex.id}`)
-          .setLabel('✏️ Editar')
-          .setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId(`exec_toggle_${ex.id}`).setLabel(ex.ativo ? '❌ Desativar' : '✅ Ativar').setStyle(ex.ativo ? ButtonStyle.Danger : ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`exec_edit_${ex.id}`).setLabel('✏️ Editar').setStyle(ButtonStyle.Secondary)
       );
     rows.push(row);
   }
   const sendRow = new ActionRowBuilder()
-    .addComponents(
-      new ButtonBuilder()
-        .setCustomId('exec_enviar_webhook')
-        .setLabel('📤 Enviar Webhook')
-        .setStyle(ButtonStyle.Primary)
-    );
+    .addComponents(new ButtonBuilder().setCustomId('exec_enviar_webhook').setLabel('📤 Enviar Webhook').setStyle(ButtonStyle.Primary));
   rows.push(sendRow);
-  await canal.send({
-    content: '📌 **Painel Fixo de Gerenciamento**',
-    embeds: [embed],
-    components: rows
-  });
-  console.log('[PAINEL FIXO] Painel enviado/atualizado no canal', canal.name);
+  await canal.send({ content: '📌 **Painel Fixo de Gerenciamento**', embeds: [embed], components: rows });
+  console.log('[PAINEL FIXO] Painel enviado.');
 }
 
 async function atualizarPainelFixo(guild) {
@@ -720,7 +599,7 @@ async function atualizarPainelFixo(guild) {
   const { executores } = config;
   const embed = new EmbedBuilder()
     .setTitle('📊 Painel de Executores')
-    .setDescription('Gerencie os executores que aparecem no webhook. Clique nos botões abaixo para ativar/desativar ou editar.')
+    .setDescription('Gerencie os executores que aparecem no webhook.')
     .setColor('Blue')
     .setTimestamp();
   let desc = '';
@@ -733,30 +612,15 @@ async function atualizarPainelFixo(guild) {
   for (const ex of executores) {
     const row = new ActionRowBuilder()
       .addComponents(
-        new ButtonBuilder()
-          .setCustomId(`exec_toggle_${ex.id}`)
-          .setLabel(ex.ativo ? '❌ Desativar' : '✅ Ativar')
-          .setStyle(ex.ativo ? ButtonStyle.Danger : ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`exec_edit_${ex.id}`)
-          .setLabel('✏️ Editar')
-          .setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId(`exec_toggle_${ex.id}`).setLabel(ex.ativo ? '❌ Desativar' : '✅ Ativar').setStyle(ex.ativo ? ButtonStyle.Danger : ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`exec_edit_${ex.id}`).setLabel('✏️ Editar').setStyle(ButtonStyle.Secondary)
       );
     rows.push(row);
   }
   const sendRow = new ActionRowBuilder()
-    .addComponents(
-      new ButtonBuilder()
-        .setCustomId('exec_enviar_webhook')
-        .setLabel('📤 Enviar Webhook')
-        .setStyle(ButtonStyle.Primary)
-    );
+    .addComponents(new ButtonBuilder().setCustomId('exec_enviar_webhook').setLabel('📤 Enviar Webhook').setStyle(ButtonStyle.Primary));
   rows.push(sendRow);
-  await msg.edit({
-    content: '📌 **Painel Fixo de Gerenciamento**',
-    embeds: [embed],
-    components: rows
-  });
+  await msg.edit({ content: '📌 **Painel Fixo de Gerenciamento**', embeds: [embed], components: rows });
   console.log('[PAINEL FIXO] Painel atualizado.');
 }
 
@@ -774,18 +638,15 @@ async function processarVerificacaoModal(interaction) {
   const user = interaction.user;
   const pendente = verificacoesPendentes[user.id];
   if (!pendente) {
-    await interaction.reply({ content: '❌ Você não tem nenhuma verificação pendente. Clique em "Iniciar Verificação" novamente.', ephemeral: true });
+    await interaction.reply({ content: '❌ Você não tem nenhuma verificação pendente.', ephemeral: true });
     return;
   }
-
   if (pendente.tentativas >= 3) {
     delete verificacoesPendentes[user.id];
-    await interaction.reply({ content: '❌ Você excedeu o número de tentativas. Clique em "Iniciar Verificação" para tentar novamente.', ephemeral: true });
+    await interaction.reply({ content: '❌ Você excedeu o número de tentativas.', ephemeral: true });
     return;
   }
-
   const codigoDigitado = interaction.fields.getTextInputValue('codigo_verificacao').trim().toUpperCase();
-
   if (codigoDigitado === pendente.codigo) {
     delete verificacoesPendentes[user.id];
     const member = interaction.member || await interaction.guild.members.fetch(user.id).catch(() => null);
@@ -799,17 +660,10 @@ async function processarVerificacaoModal(interaction) {
       if (cargoMembro) {
         try {
           await member.roles.add(cargoMembro);
-          await interaction.reply({ content: '✅ **Verificação concluída!** Você agora tem acesso total ao servidor.', ephemeral: true });
+          await interaction.reply({ content: '✅ **Verificação concluída!**', ephemeral: true });
           const logChannel = await interaction.guild.channels.fetch(CANAL_VERIFICACAO_LOGS_ID).catch(() => null);
           if (logChannel) {
-            await logChannel.send({
-              embeds: [new EmbedBuilder()
-                .setTitle('✅ Verificação Bem-Sucedida')
-                .setColor('Green')
-                .addFields({ name: 'Usuário', value: `${user.tag} (${user.id})` })
-                .setTimestamp()
-              ]
-            });
+            await logChannel.send({ embeds: [new EmbedBuilder().setTitle('✅ Verificação Bem-Sucedida').setColor('Green').addFields({ name: 'Usuário', value: `${user.tag} (${user.id})` }).setTimestamp()] });
           }
           if (pendente.canalId) {
             const canal = await interaction.guild.channels.fetch(pendente.canalId).catch(() => null);
@@ -817,7 +671,7 @@ async function processarVerificacaoModal(interaction) {
           }
         } catch (err) {
           console.error('[VERIF] Erro ao conceder cargo:', err);
-          await interaction.reply({ content: '❌ Erro ao conceder cargo. Contate um administrador.', ephemeral: true });
+          await interaction.reply({ content: '❌ Erro ao conceder cargo.', ephemeral: true });
         }
       }
     }
@@ -826,14 +680,14 @@ async function processarVerificacaoModal(interaction) {
     const restantes = 3 - pendente.tentativas;
     if (restantes === 0) {
       delete verificacoesPendentes[user.id];
-      await interaction.reply({ content: '❌ Você excedeu o número de tentativas. Clique em "Iniciar Verificação" para tentar novamente.', ephemeral: true });
+      await interaction.reply({ content: '❌ Você excedeu o número de tentativas.', ephemeral: true });
     } else {
       await interaction.reply({ content: `❌ Código incorreto. Você tem **${restantes}** tentativa(s) restante(s).`, ephemeral: true });
     }
   }
 }
 
-// =========================== SISTEMA DE STATUS (IDeia 7) ===========================
+// =========================== SISTEMA DE STATUS ===========================
 async function atualizarStatus(guild) {
   try {
     const config = lerConfig();
@@ -841,8 +695,6 @@ async function atualizarStatus(guild) {
     if (!canalId) return;
     const canal = await guild.channels.fetch(canalId).catch(() => null);
     if (!canal) return;
-
-    // Buscar dados
     const members = await guild.members.fetch();
     const total = members.size;
     const bots = members.filter(m => m.user.bot).size;
@@ -853,7 +705,6 @@ async function atualizarStatus(guild) {
       if (m.user.bot) return false;
       return m.roles.cache.some(r => CARGOS_MODERACAO.includes(r.id)) && (m.presence?.status === 'online' || m.presence?.status === 'idle' || m.presence?.status === 'dnd');
     }).size;
-
     const embed = new EmbedBuilder()
       .setTitle('📊 Status do Servidor')
       .setColor('Blue')
@@ -868,15 +719,12 @@ async function atualizarStatus(guild) {
       )
       .setTimestamp()
       .setFooter({ text: 'Atualizado a cada 5 minutos' });
-
-    // Envia ou edita a mensagem fixa
     const msgId = statusChannelId.messageId;
     if (msgId) {
       try {
         const msg = await canal.messages.fetch(msgId);
         await msg.edit({ embeds: [embed] });
       } catch {
-        // Mensagem não encontrada, enviar nova
         const msg = await canal.send({ embeds: [embed] });
         statusChannelId.messageId = msg.id;
       }
@@ -884,25 +732,19 @@ async function atualizarStatus(guild) {
       const msg = await canal.send({ embeds: [embed] });
       statusChannelId.messageId = msg.id;
     }
-  } catch (err) {
-    console.error('[STATUS] Erro ao atualizar status:', err);
-  }
+  } catch (err) { console.error('[STATUS] Erro:', err); }
 }
 
-// =========================== SISTEMA DE TICKET AUTOMATIZADO (IDeia 25) ===========================
-// Perguntas para o ticket automatizado
+// =========================== SISTEMA DE TICKET AUTOMATIZADO ===========================
 const TICKET_PERGUNTAS = [
   { id: 'problema', label: 'Descreva seu problema em detalhes:', required: true },
   { id: 'urgencia', label: 'Qual a urgência? (baixa/média/alta)', required: true },
   { id: 'tentativa', label: 'O que você já tentou fazer para resolver?', required: false }
 ];
 
-// Ao criar um ticket, inicia o fluxo de perguntas
 async function iniciarTicketAutomatizado(channel, userId) {
   const ticket = tickets[channel.id];
   if (!ticket) return;
-
-  // Envia embed com as perguntas
   const embed = new EmbedBuilder()
     .setTitle('📋 Informações do Ticket')
     .setColor('Blue')
@@ -910,54 +752,38 @@ async function iniciarTicketAutomatizado(channel, userId) {
   for (const pergunta of TICKET_PERGUNTAS) {
     embed.addFields({ name: pergunta.label, value: pergunta.required ? '*(obrigatório)*' : '*(opcional)*', inline: false });
   }
-  embed.setFooter({ text: 'Digite "cancelar" para fechar o ticket.' });
-
   await channel.send({ content: `<@${userId}>`, embeds: [embed] });
-
-  // Inicia a coleta de respostas
   ticket.respostas = {};
   ticket.etapa = 0;
 }
 
-// Função para processar respostas do ticket automatizado
 async function processarRespostaTicket(message) {
   const channel = message.channel;
   const ticket = tickets[channel.id];
   if (!ticket) return;
-  if (message.author.id !== ticket.userId) return; // só o autor responde
-
+  if (message.author.id !== ticket.userId) return;
   if (message.content.toLowerCase() === 'cancelar') {
     delete tickets[channel.id];
     await channel.send('❌ Ticket cancelado pelo usuário.');
     setTimeout(() => channel.delete().catch(() => {}), 3000);
     return;
   }
-
   const etapa = ticket.etapa;
-  if (etapa >= TICKET_PERGUNTAS.length) return; // já respondeu tudo
-
+  if (etapa >= TICKET_PERGUNTAS.length) return;
   const pergunta = TICKET_PERGUNTAS[etapa];
   const resposta = message.content.trim();
   if (pergunta.required && !resposta) {
-    await message.reply('❌ Esta pergunta é obrigatória. Por favor, responda.');
+    await message.reply('❌ Esta pergunta é obrigatória.');
     return;
   }
-
-  // Armazena resposta
   ticket.respostas[pergunta.id] = resposta || '(não respondeu)';
   ticket.etapa++;
-
   await message.reply(`✅ Resposta registrada!`);
-
-  // Próxima pergunta ou finaliza
   if (ticket.etapa < TICKET_PERGUNTAS.length) {
     const proxPergunta = TICKET_PERGUNTAS[ticket.etapa];
     await channel.send(`**${proxPergunta.label}** ${proxPergunta.required ? '(obrigatório)' : '(opcional)'}`);
   } else {
-    // Todas respondidas
-    await channel.send('✅ Obrigado! Suas respostas foram registradas. Aguarde o atendimento da staff.');
-
-    // Envia as respostas para o log da staff (opcional)
+    await channel.send('✅ Obrigado! Suas respostas foram registradas.');
     const embedLog = new EmbedBuilder()
       .setTitle('📋 Respostas do Ticket Automatizado')
       .setColor('Green')
@@ -973,18 +799,158 @@ async function processarRespostaTicket(message) {
   }
 }
 
-// =========================== EVENTOS ===========================
+// =========================== SISTEMA DE PAINEL FIXO DE CALL ===========================
+async function enviarPainelCall(guild) {
+  const config = lerConfig();
+  const canalId = config.canalPainelCall;
+  if (!canalId) {
+    console.warn('[CALL PAINEL] Canal do painel não configurado. Use /call configurar painel-canal.');
+    return;
+  }
+  const canal = await guild.channels.fetch(canalId).catch(() => null);
+  if (!canal) {
+    console.warn('[CALL PAINEL] Canal não encontrado.');
+    return;
+  }
+  const msgs = await canal.messages.fetch({ limit: 20 }).catch(() => []);
+  const botMsgs = msgs.filter((m) => m.author.id === client.user.id);
+  for (const [, msg] of botMsgs) { try { await msg.delete(); } catch {} }
 
-// ---- NOVO MEMBRO ----
+  const embed = new EmbedBuilder()
+    .setTitle('🎤 Crie seu canal de voz')
+    .setDescription('Clique no botão abaixo para criar um canal de voz temporário.\nVocê poderá definir nome, limite de pessoas e se deseja chamar o bot de música.')
+    .setColor('Green')
+    .setImage('https://i.imgur.com/tov858d.png')
+    .setFooter({ text: 'O canal será deletado automaticamente quando ficar vazio.' })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('abrir_modal_call')
+      .setLabel('🎧 Criar Call')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('🎧')
+  );
+
+  await canal.send({ embeds: [embed], components: [row] });
+  console.log('[CALL PAINEL] Painel enviado.');
+}
+
+async function criarCallModal(interaction) {
+  const nome = interaction.fields.getTextInputValue('call_nome') || `Call de ${interaction.user.username}`;
+  const limite = parseInt(interaction.fields.getTextInputValue('call_limite')) || 1;
+  const musica = interaction.fields.getTextInputValue('call_musica').toLowerCase() === 'sim' ? true : false;
+
+  for (const [channelId, data] of Object.entries(voiceChannels)) {
+    if (data.creatorId === interaction.user.id) {
+      return interaction.reply({ content: '❌ Você já tem um canal de voz ativo! Entre nele.', ephemeral: true });
+    }
+  }
+
+  const config = lerConfig();
+  const parentId = config.categoriaCall || null;
+  const logChannelId = config.canalLogCall;
+
+  try {
+    const canalVoz = await interaction.guild.channels.create({
+      name: nome,
+      type: ChannelType.GuildVoice,
+      parent: parentId,
+      userLimit: Math.min(limite, 10),
+      permissionOverwrites: [
+        { id: interaction.guild.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect] },
+        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.ManageChannels] }
+      ]
+    });
+
+    voiceChannels[canalVoz.id] = { creatorId: interaction.user.id, botMoved: false, timeout: null };
+
+    if (musica) {
+      const botId = config.botMusicaId;
+      if (botId) {
+        try {
+          const botMember = await interaction.guild.members.fetch(botId).catch(() => null);
+          if (botMember && botMember.voice?.channelId !== canalVoz.id) {
+            await botMember.voice.setChannel(canalVoz.id, 'Chamado para música pelo usuário');
+            voiceChannels[canalVoz.id].botMoved = true;
+          }
+        } catch (err) { console.error('[CALL] Erro ao mover bot:', err); }
+      } else {
+        await interaction.followUp({ content: '⚠️ Bot de música não configurado. Use `/call configurar bot-id`.', ephemeral: true });
+      }
+    }
+
+    const checkVazio = () => {
+      const channel = client.channels.cache.get(canalVoz.id);
+      if (!channel) return;
+      if (channel.members.size === 0) {
+        if (voiceChannels[canalVoz.id]?.timeout) clearTimeout(voiceChannels[canalVoz.id].timeout);
+        voiceChannels[canalVoz.id].timeout = setTimeout(async () => {
+          try {
+            await channel.delete('Canal de voz vazio.');
+            delete voiceChannels[canalVoz.id];
+            if (logChannelId) {
+              const logCanal = await interaction.guild.channels.fetch(logChannelId).catch(() => null);
+              if (logCanal) {
+                const embed = new EmbedBuilder()
+                  .setTitle('🗑️ Canal de voz deletado')
+                  .setColor('Red')
+                  .addFields(
+                    { name: 'Canal', value: canalVoz.name },
+                    { name: 'Criado por', value: `<@${voiceChannels[canalVoz.id]?.creatorId || 'Desconhecido'}>` }
+                  )
+                  .setTimestamp();
+                await logCanal.send({ embeds: [embed] });
+              }
+            }
+          } catch (err) { console.error('[CALL] Erro ao deletar:', err); }
+        }, 10000);
+      } else {
+        if (voiceChannels[canalVoz.id]?.timeout) {
+          clearTimeout(voiceChannels[canalVoz.id].timeout);
+          voiceChannels[canalVoz.id].timeout = null;
+        }
+      }
+    };
+
+    client.on('voiceStateUpdate', (oldState, newState) => {
+      if (newState.channelId === canalVoz.id || oldState.channelId === canalVoz.id) {
+        checkVazio();
+      }
+    });
+
+    if (logChannelId) {
+      const logCanal = await interaction.guild.channels.fetch(logChannelId).catch(() => null);
+      if (logCanal) {
+        const embed = new EmbedBuilder()
+          .setTitle('🎤 Canal de voz criado')
+          .setColor('Green')
+          .addFields(
+            { name: 'Canal', value: canalVoz.name },
+            { name: 'Criado por', value: interaction.user.tag },
+            { name: 'Limite', value: `${limite}` },
+            { name: 'Música', value: musica ? '✅ Ativado' : '❌ Desativado' }
+          )
+          .setTimestamp();
+        await logCanal.send({ embeds: [embed] });
+      }
+    }
+
+    await interaction.reply({ content: `✅ Canal de voz **${canalVoz.name}** criado! ${musica ? '🎵 Bot de música ativado.' : ''}\nEntre nele: ${canalVoz}`, ephemeral: false });
+  } catch (err) {
+    console.error('[CALL] Erro ao criar canal:', err);
+    await interaction.reply({ content: '❌ Erro ao criar o canal de voz. Verifique minhas permissões.', ephemeral: true });
+  }
+}
+
+// =========================== EVENTOS ===========================
 client.on("guildMemberAdd", async (member) => {
   const config = lerConfig();
   const cargoNaoVerificado = config.cargoNaoVerificado;
   const canalVerificacao = config.canalVerificacao;
-
   if (cargoNaoVerificado) {
     try { await member.roles.add(cargoNaoVerificado); } catch (err) { console.error('[VERIF] Erro ao aplicar cargo temporário:', err); }
   }
-
   if (canalVerificacao) {
     const canal = await member.guild.channels.fetch(canalVerificacao).catch(() => null);
     if (canal) {
@@ -994,24 +960,19 @@ client.on("guildMemberAdd", async (member) => {
         .setColor('Green')
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('verificar_geral')
-          .setLabel('🔐 Iniciar Verificação')
-          .setStyle(ButtonStyle.Success)
-          .setEmoji('🔐')
+        new ButtonBuilder().setCustomId('verificar_geral').setLabel('🔐 Iniciar Verificação').setStyle(ButtonStyle.Success).setEmoji('🔐')
       );
       await canal.send({ content: `<@${member.id}>`, embeds: [embed], components: [row] });
     }
   }
 });
 
-// ---- MENSAGENS (UNIFICADO) ----
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
   const member = message.member;
 
-  // --- Auto mod: palavras proibidas (usando regex) ---
+  // --- Auto mod: palavras proibidas (regex) ---
   const conteudo = message.content;
   if (PALAVRAS_PROIBIDAS_REGEX.test(conteudo) && !temCargoMod(member)) {
     try { await message.delete(); } catch {}
@@ -1021,10 +982,7 @@ client.on("messageCreate", async (message) => {
       await enviarLogMod(message.guild, new EmbedBuilder()
         .setTitle('🚫 Bloqueio de Palavra-Chave')
         .setColor('Red')
-        .addFields(
-          { name: 'Usuário', value: message.author.tag },
-          { name: 'Mensagem', value: message.content.slice(0, 200) }
-        )
+        .addFields({ name: 'Usuário', value: message.author.tag }, { name: 'Mensagem', value: message.content.slice(0, 200) })
         .setTimestamp());
     } catch {}
     return;
@@ -1049,7 +1007,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- Flood (limite: 8 mensagens em 5 segundos) ---
+  // --- Flood (8 mensagens em 5s) ---
   if (!client.floodUsers) client.floodUsers = {};
   const user = client.floodUsers[message.author.id] || { count: 0, timer: null };
   user.count++;
@@ -1074,10 +1032,9 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- Repetição de mensagem em múltiplos canais (agora mais brando) ---
+  // --- Repetição (3 canais diferentes em 1 minuto) ---
   if (!mensagensRecentes[message.author.id]) mensagensRecentes[message.author.id] = [];
   const msgs = mensagensRecentes[message.author.id];
-  // Verifica se a mesma mensagem foi enviada em 3 ou mais canais diferentes nos últimos 60 segundos
   const canaisDiferentes = new Set();
   const agora = Date.now();
   for (const m of msgs) {
@@ -1085,21 +1042,16 @@ client.on("messageCreate", async (message) => {
       canaisDiferentes.add(m.channelId);
     }
   }
-  // Inclui o canal atual
   canaisDiferentes.add(message.channel.id);
-
   if (canaisDiferentes.size >= 3 && !temCargoMod(member)) {
     try { await message.delete(); } catch {}
     try {
-      await message.member.timeout(5 * 60 * 1000, 'Anti-spam: mensagem repetida em múltiplos canais');
+      await message.member.timeout(5 * 60 * 1000, 'Anti-spam: mensagem repetida');
       await message.channel.send(`⚠️ ${message.author}, você está repetindo a mesma mensagem em vários canais. Foi mutado por 5 minutos.`);
       await enviarLogMod(message.guild, new EmbedBuilder()
         .setTitle('🔄 Anti-Spam (Repetição)')
         .setColor('Orange')
-        .addFields(
-          { name: 'Usuário', value: message.author.tag },
-          { name: 'Mensagem', value: message.content.slice(0, 200) }
-        )
+        .addFields({ name: 'Usuário', value: message.author.tag }, { name: 'Mensagem', value: message.content.slice(0, 200) })
         .setTimestamp());
     } catch {}
     return;
@@ -1143,7 +1095,7 @@ client.on("messageCreate", async (message) => {
     const pergunta = PERGUNTAS[etapa];
     const resposta = message.content.trim();
     if (pergunta.required && !resposta) {
-      await message.reply('❌ Esta pergunta é obrigatória. Digite uma resposta válida.');
+      await message.reply('❌ Esta pergunta é obrigatória.');
       return;
     }
     if (pergunta.minLength && resposta.length < pergunta.minLength) {
@@ -1162,7 +1114,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- Ticket automatizado (coleta de respostas) ---
+  // --- Ticket automatizado ---
   const ticket = tickets[message.channel.id];
   if (ticket && ticket.etapa !== undefined && ticket.etapa < TICKET_PERGUNTAS.length) {
     if (message.author.id === ticket.userId) {
@@ -1171,46 +1123,28 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // Monitoramento de atividade (para pico de mensagens)
   monitoramentoAtividade.contagem++;
 });
 
 // =========================== INTERACTIONS ===========================
 client.on("interactionCreate", async (interaction) => {
-  // ---- BOTÕES ----
   if (interaction.isButton()) {
-    // ========== VERIFICAÇÃO ==========
+    // Verificação
     if (interaction.customId === 'verificar_geral') {
       const userId = interaction.user.id;
       const config = lerConfig();
       const cargoMembro = config.cargoMembroVerificado;
-
       if (cargoMembro && interaction.member.roles.cache.has(cargoMembro)) {
         return interaction.reply({ content: '✅ Você já está verificado!', ephemeral: true });
       }
-
       if (verificacoesPendentes[userId]) {
-        return interaction.reply({ 
-          content: '⏳ Você já tem um código pendente. Verifique a mensagem anterior (só você vê).', 
-          ephemeral: true 
-        });
+        return interaction.reply({ content: '⏳ Você já tem um código pendente.', ephemeral: true });
       }
-
       const codigo = gerarCodigoVerificacao();
-      verificacoesPendentes[userId] = {
-        codigo,
-        tentativas: 0,
-        timestamp: Date.now()
-      };
-
+      verificacoesPendentes[userId] = { codigo, tentativas: 0, timestamp: Date.now() };
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('abrir_modal_codigo')
-          .setLabel('🔑 Digitar Código')
-          .setStyle(ButtonStyle.Primary)
-          .setEmoji('🔑')
+        new ButtonBuilder().setCustomId('abrir_modal_codigo').setLabel('🔑 Digitar Código').setStyle(ButtonStyle.Primary).setEmoji('🔑')
       );
-
       await interaction.reply({
         content: `🔐 **Seu código de verificação é:** \`${codigo}\`\n\nClique no botão abaixo para abrir o formulário e digitar o código.\n\n*Você tem 3 tentativas.*`,
         components: [row],
@@ -1223,20 +1157,12 @@ client.on("interactionCreate", async (interaction) => {
       const userId = interaction.user.id;
       const pendente = verificacoesPendentes[userId];
       if (!pendente) {
-        return interaction.reply({ 
-          content: '❌ Você não tem nenhuma verificação pendente. Clique em "Iniciar Verificação" novamente.', 
-          ephemeral: true 
-        });
+        return interaction.reply({ content: '❌ Você não tem nenhuma verificação pendente.', ephemeral: true });
       }
-
       if (pendente.tentativas >= 3) {
         delete verificacoesPendentes[userId];
-        return interaction.reply({ 
-          content: '❌ Você excedeu o número de tentativas. Clique em "Iniciar Verificação" para tentar novamente.', 
-          ephemeral: true 
-        });
+        return interaction.reply({ content: '❌ Você excedeu o número de tentativas.', ephemeral: true });
       }
-
       const modal = new ModalBuilder()
         .setCustomId('modal_verificacao')
         .setTitle('Verificação de Segurança');
@@ -1250,12 +1176,9 @@ client.on("interactionCreate", async (interaction) => {
         .setMinLength(4);
       const actionRow = new ActionRowBuilder().addComponents(codigoInput);
       modal.addComponents(actionRow);
-
       await interaction.showModal(modal);
       return;
     }
-
-    // ---- Ticket: abrir ticket via menu (já tratado no select) ----
 
     // ---- Avaliação ----
     if (interaction.customId === "abrir_modal_avaliacao") {
@@ -1316,16 +1239,18 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `✅ Avaliação enviada! Você deu **${estrelas} (${nota}/5)**.`, embeds: [], components: [] });
     }
 
-    // ---- Reivindicar ticket ----
+    // ---- Reivindicar ticket (corrigido) ----
     if (interaction.customId === "reivindicar_ticket") {
-      const ticket = tickets[interaction.channel.id];
-      if (!ticket) return interaction.reply({ content: "❌ Ticket não encontrado!", flags: 64 });
+      const channelId = interaction.message.channelId;
+      const ticket = tickets[channelId];
+      if (!ticket) {
+        return interaction.reply({ content: "❌ Ticket não encontrado!", flags: 64 });
+      }
       if (ticket.staffId) return interaction.reply({ content: `❌ Este ticket já foi reivindicado por <@${ticket.staffId}>!`, flags: 64 });
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode reivindicar tickets!", flags: 64 });
       ticket.staffId = interaction.user.id;
       ticket.staffTag = interaction.user.tag;
 
-      // Se o ticket ainda não tiver respostas, exibe as respostas coletadas
       let respostasText = '';
       if (ticket.respostas && Object.keys(ticket.respostas).length > 0) {
         respostasText = '\n\n**Respostas do usuário:**\n';
@@ -1364,11 +1289,35 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Fechar ticket ----
+    // ---- Fechar ticket (corrigido) ----
     if (interaction.customId === "fechar_ticket") {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 });
-      const ticket = tickets[interaction.channel.id];
-      if (!ticket) return interaction.reply({ content: "❌ Esse não é um canal de ticket!", flags: 64 });
+      const channelId = interaction.message.channelId;
+      let ticket = tickets[channelId];
+      
+      if (!ticket) {
+        const canal = interaction.channel;
+        if (canal.parentId === CATEGORIA_TICKETS_ID) {
+          const nomeParts = canal.name.split('-');
+          const userId = nomeParts.length > 1 ? nomeParts.slice(1).join('-') : null;
+          if (userId) {
+            ticket = {
+              userId: userId,
+              categoria: "Desconhecida",
+              staffId: null,
+              staffTag: null,
+              abertura: Date.now(),
+              respostas: {},
+              etapa: 0
+            };
+            tickets[channelId] = ticket;
+          }
+        }
+        if (!ticket) {
+          return interaction.reply({ content: "❌ Não foi possível identificar este ticket. Feche o canal manualmente.", flags: 64 });
+        }
+      }
+
       await interaction.deferReply();
       const mensagens = await interaction.channel.messages.fetch({ limit: 100 });
       const transcript = mensagens.reverse().map((m) => `[${new Date(m.createdTimestamp).toLocaleString("pt-BR")}] ${m.author.tag}: ${m.content || "[anexo/embed]"}`).join("\n");
@@ -1429,7 +1378,7 @@ client.on("interactionCreate", async (interaction) => {
       const userId = interaction.user.id;
       for (const [channelId, estado] of Object.entries(formulariosPendentes)) {
         if (estado.userId === userId) {
-          return interaction.reply({ content: "❌ Você já tem um formulário em andamento. Verifique seu canal privado.", flags: 64 });
+          return interaction.reply({ content: "❌ Você já tem um formulário em andamento.", flags: 64 });
         }
       }
       try {
@@ -1438,7 +1387,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({ content: `✅ Canal criado: ${channel.toString()}` });
       } catch (error) {
         console.error('[ERRO BOTÃO INICIAR]', error);
-        await interaction.editReply({ content: '❌ Erro ao iniciar o formulário. Tente novamente.' });
+        await interaction.editReply({ content: '❌ Erro ao iniciar o formulário.' });
       }
       return;
     }
@@ -1453,11 +1402,11 @@ client.on("interactionCreate", async (interaction) => {
         formulariosEnviados[userId] = { respostas: estado.respostas, guildId: interaction.guild.id };
         if (estado.timeout) clearTimeout(estado.timeout);
         delete formulariosPendentes[interaction.channel.id];
-        await interaction.update({ content: "✅ Formulário enviado com sucesso! Aguarde a análise da equipe.", embeds: [], components: [] });
+        await interaction.update({ content: "✅ Formulário enviado com sucesso! Aguarde a análise.", embeds: [], components: [] });
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
       } catch (error) {
         console.error('[ERRO CONFIRMAR]', error);
-        await interaction.reply({ content: '❌ Erro ao enviar o formulário. Tente novamente.', flags: 64 });
+        await interaction.reply({ content: '❌ Erro ao enviar o formulário.', flags: 64 });
       }
       return;
     }
@@ -1476,14 +1425,14 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId.startsWith("form_aceitar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
-      if (!data) return interaction.reply({ content: "❌ Candidatura não encontrada ou já processada.", flags: 64 });
-      if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para aceitar candidaturas.", flags: 64 });
+      if (!data) return interaction.reply({ content: "❌ Candidatura não encontrada.", flags: 64 });
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão.", flags: 64 });
       const user = await client.users.fetch(userId).catch(() => null);
       if (user) {
         const embedAprovado = new EmbedBuilder()
           .setTitle('🎉 Parabéns! Você foi aprovado!')
           .setColor('Green')
-          .setDescription('Sua candidatura para staff foi **aceita**! Em breve você receberá mais instruções.\n\nAgradecemos o interesse em fazer parte da equipe!')
+          .setDescription('Sua candidatura para staff foi **aceita**! Em breve você receberá mais instruções.\n\nAgradecemos o interesse!')
           .setFooter({ text: `Aprovado por ${interaction.user.tag}` })
           .setTimestamp();
         await user.send({ embeds: [embedAprovado] }).catch(() => console.log(`[DM] Não foi possível enviar DM para ${user.tag}`));
@@ -1497,14 +1446,14 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId.startsWith("form_recusar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
-      if (!data) return interaction.reply({ content: "❌ Candidatura não encontrada ou já processada.", flags: 64 });
-      if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para recusar candidaturas.", flags: 64 });
+      if (!data) return interaction.reply({ content: "❌ Candidatura não encontrada.", flags: 64 });
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão.", flags: 64 });
       const user = await client.users.fetch(userId).catch(() => null);
       if (user) {
         const embedReprovado = new EmbedBuilder()
           .setTitle('😔 Obrigado pelo interesse!')
           .setColor('Red')
-          .setDescription('Infelizmente, sua candidatura para staff não foi aprovada desta vez.\n\n**Não desanime!** Continue participando da comunidade e, no futuro, novas oportunidades podem surgir.\n\nAgradecemos sua disposição em ajudar!')
+          .setDescription('Infelizmente, sua candidatura para staff não foi aprovada desta vez.\n\n**Não desanime!** Continue participando da comunidade!')
           .setFooter({ text: `Recusado por ${interaction.user.tag}` })
           .setTimestamp();
         await user.send({ embeds: [embedReprovado] }).catch(() => console.log(`[DM] Não foi possível enviar DM para ${user.tag}`));
@@ -1556,17 +1505,55 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ content: '✅ Webhook reenviado com sucesso!' });
       return;
     }
+
+    // ---- CALL - ABRIR MODAL (painel fixo) ----
+    if (interaction.customId === 'abrir_modal_call') {
+      const modal = new ModalBuilder()
+        .setCustomId('modal_criar_call')
+        .setTitle('Criar Call');
+      
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('call_nome')
+            .setLabel('Nome do canal (opcional)')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Ex: Minha Call')
+            .setRequired(false)
+            .setMaxLength(50)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('call_limite')
+            .setLabel('Limite de pessoas (1-10)')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Ex: 5')
+            .setRequired(true)
+            .setMaxLength(2)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('call_musica')
+            .setLabel('Chamar bot de música? (sim/não)')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Digite "sim" ou "não"')
+            .setRequired(true)
+            .setMaxLength(3)
+        )
+      );
+
+      await interaction.showModal(modal);
+      return;
+    }
   }
 
   // ---- MODAIS ----
   if (interaction.isModalSubmit()) {
-    // Verificação
     if (interaction.customId === 'modal_verificacao') {
       await processarVerificacaoModal(interaction);
       return;
     }
 
-    // Avaliação staff
     if (interaction.customId === "modal_avaliacao_staff") {
       const staffName = interaction.fields.getTextInputValue("staff_name_input");
       const comment = interaction.fields.getTextInputValue("comment_input");
@@ -1595,7 +1582,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // Webhook - Editar executor (modal)
     if (interaction.customId.startsWith('exec_modal_')) {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
       const id = interaction.customId.replace('exec_modal_', '');
@@ -1610,16 +1596,18 @@ client.on("interactionCreate", async (interaction) => {
       const linhas = camposRaw.split('\n').filter(line => line.trim());
       executor.campos = linhas.map(line => {
         const parts = line.split('|').map(s => s.trim());
-        return {
-          name: parts[0] || 'Campo',
-          value: parts[1] || 'Valor',
-          inline: parts[2] ? parts[2].toLowerCase() === 'true' : false
-        };
+        return { name: parts[0] || 'Campo', value: parts[1] || 'Valor', inline: parts[2] ? parts[2].toLowerCase() === 'true' : false };
       });
       salvarExecutores(config);
       await enviarWebhookExecutores(interaction.guild);
       await atualizarPainelFixo(interaction.guild);
       await interaction.reply({ content: `✅ ${executor.nome} atualizado com sucesso!`, flags: 64 });
+      return;
+    }
+
+    // ---- CALL - MODAL ----
+    if (interaction.customId === 'modal_criar_call') {
+      await criarCallModal(interaction);
       return;
     }
   }
@@ -1642,23 +1630,15 @@ client.on("interactionCreate", async (interaction) => {
     const nomeCanal = `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
 
     try {
-      // ----- CORREÇÃO DE PERMISSÕES AQUI -----
-      // Vamos negar ViewChannel para todos os cargos, exceto o autor, staff e suporte.
-      // Primeiro, obtemos todos os cargos do servidor.
       const todosCargos = await guild.roles.fetch();
       const permissoes = [
-        // Negar para @everyone
         { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-        // Permitir para o autor
         { id: userId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-        // Permitir para staff e suporte
         { id: CARGO_STAFF_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
         { id: CARGO_SUPORTE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-        // Permitir para o próprio bot
         { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
       ];
 
-      // Agora, para todos os outros cargos (exceto os já listados), negamos ViewChannel
       const cargosParaNegar = todosCargos.filter(r => 
         r.id !== guild.roles.everyone.id && 
         r.id !== CARGO_STAFF_ID && 
@@ -1683,11 +1663,10 @@ client.on("interactionCreate", async (interaction) => {
         staffId: null,
         staffTag: null,
         abertura: agora,
-        respostas: {},  // para armazenar as respostas do ticket automatizado
+        respostas: {},
         etapa: 0
       };
 
-      // Envia embed inicial do ticket
       const embed = new EmbedBuilder()
         .setTitle(`🎫 Ticket — ${nomeCategoria}`).setColor("Blue")
         .setThumbnail("https://i.imgur.com/6sSikdc.png")
@@ -1706,7 +1685,6 @@ client.on("interactionCreate", async (interaction) => {
 
       await canalTicket.send({ content: `${interaction.user} | <@&${CARGO_SUPORTE_ID}>`, embeds: [embed], components: [botoes] });
 
-      // Inicia o fluxo de perguntas automatizado
       await iniciarTicketAutomatizado(canalTicket, userId);
 
       await enviarLogTicket(guild, new EmbedBuilder().setTitle("🎫 Ticket Aberto").setColor("Blue")
@@ -1731,7 +1709,6 @@ client.on("interactionCreate", async (interaction) => {
   // ========== VERIFICAÇÃO ==========
   if (interaction.commandName === 'verificacao') {
     const sub = interaction.options.getSubcommand();
-
     if (sub === 'configurar') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode configurar.', flags: 64 });
       const cargoNaoVerificado = interaction.options.getRole('cargo-nao-verificado');
@@ -1749,45 +1726,38 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: resposta, flags: 64 });
       return;
     }
-
     if (sub === 'painel') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode enviar o painel.', flags: 64 });
       const config = lerConfig();
       const canalId = config.canalVerificacao;
-      if (!canalId) return interaction.reply({ content: '❌ Canal de verificação não configurado. Use `/verificacao configurar canal`.', flags: 64 });
+      if (!canalId) return interaction.reply({ content: '❌ Canal de verificação não configurado.', flags: 64 });
       const canal = await interaction.guild.channels.fetch(canalId).catch(() => null);
       if (!canal) return interaction.reply({ content: '❌ Canal configurado não encontrado.', flags: 64 });
       const embed = new EmbedBuilder()
         .setTitle('🔐 Verificação de Segurança')
-        .setDescription('Para ter acesso ao servidor, você precisa se verificar.\n\nClique no botão abaixo e siga as instruções no chat (apenas você verá o código).')
+        .setDescription('Clique no botão abaixo para se verificar.')
         .setColor('Blue')
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('verificar_geral')
-          .setLabel('🔐 Iniciar Verificação')
-          .setStyle(ButtonStyle.Success)
-          .setEmoji('🔐')
+        new ButtonBuilder().setCustomId('verificar_geral').setLabel('🔐 Iniciar Verificação').setStyle(ButtonStyle.Success).setEmoji('🔐')
       );
       await canal.send({ embeds: [embed], components: [row] });
       await interaction.reply({ content: `✅ Painel de verificação enviado em ${canal}!`, flags: 64 });
       return;
     }
-
     if (sub === 'configurar-permissoes') {
-      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar este comando.', flags: 64 });
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar.', flags: 64 });
       await interaction.deferReply({ flags: 64 });
       const config = lerConfig();
       if (!config.cargoNaoVerificado || !config.cargoMembroVerificado) {
-        return interaction.editReply({ content: '❌ Cargos de verificação não configurados. Use `/verificacao configurar` primeiro.' });
+        return interaction.editReply({ content: '❌ Cargos de verificação não configurados.' });
       }
       const total = await configurarPermissoesCanais(interaction.guild);
-      await interaction.editReply({ content: `✅ Permissões configuradas em **${total}** canais!\n\n**Lembre-se:** canais da categoria staff agora estão bloqueados para TODOS (incluindo verificados).` });
+      await interaction.editReply({ content: `✅ Permissões configuradas em **${total}** canais!` });
       return;
     }
-
     if (sub === 'dar-cargo-todos') {
-      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar este comando.', flags: 64 });
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar.', flags: 64 });
       await interaction.deferReply({ flags: 64 });
       const config = lerConfig();
       const cargoMembro = config.cargoMembroVerificado;
@@ -1796,18 +1766,14 @@ client.on("interactionCreate", async (interaction) => {
       let count = 0;
       for (const [, member] of members) {
         if (!member.user.bot && !member.roles.cache.has(cargoMembro)) {
-          try {
-            await member.roles.add(cargoMembro);
-            count++;
-          } catch {}
+          try { await member.roles.add(cargoMembro); count++; } catch {}
         }
       }
       await interaction.editReply({ content: `✅ Cargo verificado adicionado para **${count}** membros.` });
       return;
     }
-
     if (sub === 'remover-cargo-nao-verificado') {
-      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar este comando.', flags: 64 });
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar.', flags: 64 });
       await interaction.deferReply({ flags: 64 });
       const config = lerConfig();
       const cargoNaoVerificado = config.cargoNaoVerificado;
@@ -1816,10 +1782,7 @@ client.on("interactionCreate", async (interaction) => {
       let count = 0;
       for (const [, member] of members) {
         if (!member.user.bot && member.roles.cache.has(cargoNaoVerificado)) {
-          try {
-            await member.roles.remove(cargoNaoVerificado);
-            count++;
-          } catch {}
+          try { await member.roles.remove(cargoNaoVerificado); count++; } catch {}
         }
       }
       await interaction.editReply({ content: `✅ Cargo não verificado removido de **${count}** membros.` });
@@ -1827,7 +1790,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ========== STATUS (Ideia 7) ==========
+  // ========== STATUS ==========
   if (interaction.commandName === 'status') {
     const sub = interaction.options.getSubcommand();
     if (sub === 'configurar') {
@@ -1838,7 +1801,6 @@ client.on("interactionCreate", async (interaction) => {
       config.canalStatus = canal.id;
       salvarConfig(config);
       await interaction.reply({ content: `✅ Canal de status configurado: ${canal}`, flags: 64 });
-      // Envia a primeira mensagem de status
       await atualizarStatus(interaction.guild);
       return;
     }
@@ -1851,7 +1813,42 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ========== COMANDOS ORIGINAIS (mantidos) ==========
+  // ========== CALL ==========
+  if (interaction.commandName === 'call') {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'configurar') {
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode configurar.', flags: 64 });
+      const categoria = interaction.options.getChannel('categoria');
+      const logCanal = interaction.options.getChannel('log-canal');
+      const botId = interaction.options.getString('bot-id');
+      const painelCanal = interaction.options.getChannel('painel-canal');
+      const config = lerConfig();
+      if (categoria) config.categoriaCall = categoria.id;
+      if (logCanal) config.canalLogCall = logCanal.id;
+      if (botId) config.botMusicaId = botId;
+      if (painelCanal) config.canalPainelCall = painelCanal.id;
+      salvarConfig(config);
+      let resposta = '✅ Configurações salvas!';
+      if (categoria) resposta += `\nCategoria: ${categoria.name}`;
+      if (logCanal) resposta += `\nCanal de logs: ${logCanal.name}`;
+      if (botId) resposta += `\nBot de música ID: ${botId}`;
+      if (painelCanal) resposta += `\nPainel será enviado em: ${painelCanal}`;
+      await interaction.reply({ content: resposta, flags: 64 });
+      if (painelCanal) {
+        await enviarPainelCall(interaction.guild);
+      }
+      return;
+    }
+    if (sub === 'painel') {
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode enviar o painel.', flags: 64 });
+      await interaction.deferReply({ flags: 64 });
+      await enviarPainelCall(interaction.guild);
+      await interaction.editReply('✅ Painel de call enviado!');
+      return;
+    }
+  }
+
+  // ========== COMANDOS ORIGINAIS ==========
   // --- /say ---
   if (interaction.commandName === "say") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
@@ -1867,7 +1864,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle(`Avatar de ${user.username}`).setImage(user.displayAvatarURL({ size: 1024, extension: "png" })).setColor("Blue")] });
   }
 
-  // --- /video (mantido, mas pode remover se quiser) ---
+  // --- /video ---
   if (interaction.commandName === "video") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const link = interaction.options.getString("link");
@@ -2181,7 +2178,7 @@ setInterval(() => {
             embeds: [new EmbedBuilder()
               .setTitle('📈 Pico de Atividade Detectado')
               .setColor('Orange')
-              .setDescription(`Foram enviadas **${monitoramentoAtividade.contagem} mensagens** no último minuto. Possível raid ou spam.`)
+              .setDescription(`Foram enviadas **${monitoramentoAtividade.contagem} mensagens** no último minuto.`)
               .setTimestamp()
             ]
           });
@@ -2198,80 +2195,78 @@ client.once("ready", async () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
 
   const commands = [
-    // ========== COMANDOS DE VERIFICAÇÃO ==========
-    new SlashCommandBuilder()
-      .setName('verificacao')
-      .setDescription('Gerencia o sistema de verificação')
+    // Verificação
+    new SlashCommandBuilder().setName('verificacao').setDescription('Gerencia o sistema de verificação')
       .addSubcommand(sub => sub.setName('configurar').setDescription('Configura os cargos e canal de verificação')
         .addRoleOption(opt => opt.setName('cargo-nao-verificado').setDescription('Cargo para membros não verificados').setRequired(false))
         .addRoleOption(opt => opt.setName('cargo-membro').setDescription('Cargo para membros verificados').setRequired(false))
         .addChannelOption(opt => opt.setName('canal').setDescription('Canal onde o painel será enviado').setRequired(false).addChannelTypes(ChannelType.GuildText)))
       .addSubcommand(sub => sub.setName('painel').setDescription('Envia o painel de verificação no canal configurado'))
-      .addSubcommand(sub => sub.setName('configurar-permissoes').setDescription('Configura as permissões de todos os canais (novato e verificado NÃO veem categoria staff)'))
-      .addSubcommand(sub => sub.setName('dar-cargo-todos').setDescription('Dá o cargo de verificado para todos os membros atuais'))
-      .addSubcommand(sub => sub.setName('remover-cargo-nao-verificado').setDescription('Remove o cargo de não verificado de todos os membros')),
-
-    // ========== COMANDO DE STATUS ==========
-    new SlashCommandBuilder()
-      .setName('status')
-      .setDescription('Painel de status do servidor')
-      .addSubcommand(sub => sub.setName('configurar').setDescription('Define o canal onde o status será enviado')
+      .addSubcommand(sub => sub.setName('configurar-permissoes').setDescription('Configura as permissões de todos os canais'))
+      .addSubcommand(sub => sub.setName('dar-cargo-todos').setDescription('Dá o cargo de verificado para todos os membros'))
+      .addSubcommand(sub => sub.setName('remover-cargo-nao-verificado').setDescription('Remove o cargo de não verificado')),
+    // Status
+    new SlashCommandBuilder().setName('status').setDescription('Painel de status do servidor')
+      .addSubcommand(sub => sub.setName('configurar').setDescription('Define o canal do status')
         .addChannelOption(opt => opt.setName('canal').setDescription('Canal de destino').setRequired(true).addChannelTypes(ChannelType.GuildText)))
-      .addSubcommand(sub => sub.setName('enviar').setDescription('Envia/atualiza o status manualmente')),
-
-    // ========== COMANDOS ORIGINAIS (mantidos, exceto ofuscador, giveaway, sticky) ==========
+      .addSubcommand(sub => sub.setName('enviar').setDescription('Envia/atualiza o status')),
+    // Call
+    new SlashCommandBuilder().setName('call').setDescription('Sistema de call com painel fixo')
+      .addSubcommand(sub => sub.setName('configurar').setDescription('Configura o sistema (staff)')
+        .addChannelOption(opt => opt.setName('categoria').setDescription('Categoria onde os canais serão criados').setRequired(false).addChannelTypes(ChannelType.GuildCategory))
+        .addChannelOption(opt => opt.setName('log-canal').setDescription('Canal para logs').setRequired(false).addChannelTypes(ChannelType.GuildText))
+        .addStringOption(opt => opt.setName('bot-id').setDescription('ID do bot de música').setRequired(false))
+        .addChannelOption(opt => opt.setName('painel-canal').setDescription('Canal onde o painel fixo será enviado').setRequired(false).addChannelTypes(ChannelType.GuildText)))
+      .addSubcommand(sub => sub.setName('painel').setDescription('Envia o painel fixo de call (staff)')),
+    // Comandos originais
     new SlashCommandBuilder().setName("say").setDescription("Faz o bot enviar uma mensagem")
       .addStringOption(opt => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true))
       .addChannelOption(opt => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
-    new SlashCommandBuilder().setName("avatar").setDescription("Mostra a foto de perfil de alguém")
+    new SlashCommandBuilder().setName("avatar").setDescription("Mostra a foto de perfil")
       .addUserOption(opt => opt.setName("usuario").setDescription("De quem ver o avatar").setRequired(false)),
-    new SlashCommandBuilder().setName("video").setDescription("Anuncia um vídeo novo do YouTube")
+    new SlashCommandBuilder().setName("video").setDescription("Anuncia um vídeo novo")
       .addStringOption(opt => opt.setName("link").setDescription("Link do vídeo").setRequired(true))
       .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde anunciar").setRequired(true))
       .addStringOption(opt => opt.setName("titulo").setDescription("Título personalizado").setRequired(false))
       .addStringOption(opt => opt.setName("imagem").setDescription("Link de imagem").setRequired(false)),
-    new SlashCommandBuilder().setName("avaliar").setDescription("Avalie um membro do staff pelo atendimento no chat")
-      .addUserOption(opt => opt.setName("staff").setDescription("Qual staff você quer avaliar").setRequired(true)),
-    new SlashCommandBuilder().setName("kick").setDescription("[STAFF] Expulsa um membro do servidor")
+    new SlashCommandBuilder().setName("avaliar").setDescription("Avalie um membro do staff")
+      .addUserOption(opt => opt.setName("staff").setDescription("Qual staff").setRequired(true)),
+    new SlashCommandBuilder().setName("kick").setDescription("[STAFF] Expulsa um membro")
       .addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser expulso").setRequired(true))
-      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo da expulsão").setRequired(false)),
-    new SlashCommandBuilder().setName("ban").setDescription("[STAFF] Bane um membro do servidor")
+      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
+    new SlashCommandBuilder().setName("ban").setDescription("[STAFF] Bane um membro")
       .addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser banido").setRequired(true))
-      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo do banimento").setRequired(false)),
-    new SlashCommandBuilder().setName("mute").setDescription("[STAFF] Muta um membro por um período")
+      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
+    new SlashCommandBuilder().setName("mute").setDescription("[STAFF] Muta um membro")
       .addUserOption(opt => opt.setName("usuario").setDescription("Usuário a ser mutado").setRequired(true))
       .addIntegerOption(opt => opt.setName("duracao").setDescription("Duração em minutos").setRequired(true))
-      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo do mute").setRequired(false)),
-    new SlashCommandBuilder().setName("lockdown").setDescription("[STAFF] Bloqueia todos os canais do servidor")
-      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo do lockdown").setRequired(false)),
-    new SlashCommandBuilder().setName("unlockdown").setDescription("[STAFF] Desbloqueia todos os canais do servidor"),
+      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
+    new SlashCommandBuilder().setName("lockdown").setDescription("[STAFF] Bloqueia todos os canais")
+      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
+    new SlashCommandBuilder().setName("unlockdown").setDescription("[STAFF] Desbloqueia todos os canais"),
     new SlashCommandBuilder().setName("esconder-canal").setDescription("[STAFF] Esconde o canal atual"),
     new SlashCommandBuilder().setName("mostrar-canal").setDescription("[STAFF] Mostra o canal atual"),
     new SlashCommandBuilder().setName("lock").setDescription("[STAFF] Bloqueia o canal atual")
-      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo do bloqueio").setRequired(false)),
+      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
     new SlashCommandBuilder().setName("unlock").setDescription("[STAFF] Desbloqueia o canal atual"),
-    new SlashCommandBuilder().setName("slowmode").setDescription("[STAFF] Define o modo lento do canal")
-      .addIntegerOption(opt => opt.setName("segundos").setDescription("Segundos (0 para desativar)").setRequired(true)),
-    new SlashCommandBuilder().setName("painel-ticket").setDescription("[STAFF] Envia o painel de tickets no canal configurado"),
-    new SlashCommandBuilder().setName("painel-avaliacao").setDescription("[STAFF] Envia o painel de avaliação de staff no canal configurado"),
+    new SlashCommandBuilder().setName("slowmode").setDescription("[STAFF] Define modo lento")
+      .addIntegerOption(opt => opt.setName("segundos").setDescription("Segundos").setRequired(true)),
+    new SlashCommandBuilder().setName("painel-ticket").setDescription("[STAFF] Envia o painel de tickets"),
+    new SlashCommandBuilder().setName("painel-avaliacao").setDescription("[STAFF] Envia o painel de avaliação"),
     new SlashCommandBuilder().setName("fechar-ticket").setDescription("Fecha o ticket atual"),
-    new SlashCommandBuilder()
-      .setName("formulario")
-      .setDescription("Gerencia o formulário de recrutamento")
-      .addSubcommand(sub => sub.setName("configurar").setDescription("Define o canal público para o formulário")
-        .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde o painel será enviado").setRequired(true).addChannelTypes(ChannelType.GuildText))
-        .addChannelOption(opt => opt.setName("categoria").setDescription("Categoria onde os canais privados serão criados (opcional)").setRequired(false).addChannelTypes(ChannelType.GuildCategory)))
-      .addSubcommand(sub => sub.setName("enviar").setDescription("Envia o painel do formulário no canal configurado")),
-    new SlashCommandBuilder().setName("deletar-canal").setDescription("[STAFF] Deleta um canal do servidor (texto ou voz)")
-      .addChannelOption(opt => opt.setName("canal").setDescription("Canal a ser deletado (se omitido, usa o canal atual)").setRequired(false))
-      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo da deleção (opcional)").setRequired(false)),
-    new SlashCommandBuilder()
-      .setName("webhook")
-      .setDescription("[STAFF] Gerencia o webhook de executores")
-      .addSubcommand(sub => sub.setName("painel").setDescription("Envia o painel fixo no canal configurado"))
-      .addSubcommand(sub => sub.setName("enviar").setDescription("Reenvia o webhook com a configuração atual"))
-      .addSubcommand(sub => sub.setName("configurar").setDescription("Configura o canal do painel fixo")
-        .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde o painel fixo será enviado").setRequired(true).addChannelTypes(ChannelType.GuildText))),
+    new SlashCommandBuilder().setName("formulario").setDescription("Gerencia o formulário de recrutamento")
+      .addSubcommand(sub => sub.setName("configurar").setDescription("Define o canal público")
+        .addChannelOption(opt => opt.setName("canal").setDescription("Canal").setRequired(true).addChannelTypes(ChannelType.GuildText))
+        .addChannelOption(opt => opt.setName("categoria").setDescription("Categoria para canais privados").setRequired(false).addChannelTypes(ChannelType.GuildCategory)))
+      .addSubcommand(sub => sub.setName("enviar").setDescription("Envia o painel")),
+    new SlashCommandBuilder().setName("deletar-canal").setDescription("[STAFF] Deleta um canal")
+      .addChannelOption(opt => opt.setName("canal").setDescription("Canal a ser deletado").setRequired(false))
+      .addStringOption(opt => opt.setName("motivo").setDescription("Motivo").setRequired(false)),
+    new SlashCommandBuilder().setName("webhook").setDescription("[STAFF] Gerencia o webhook de executores")
+      .addSubcommand(sub => sub.setName("painel").setDescription("Envia o painel fixo"))
+      .addSubcommand(sub => sub.setName("enviar").setDescription("Reenvia o webhook"))
+      .addSubcommand(sub => sub.setName("configurar").setDescription("Configura o canal do painel")
+        .addChannelOption(opt => opt.setName("canal").setDescription("Canal").setRequired(true).addChannelTypes(ChannelType.GuildText))),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -2287,27 +2282,21 @@ client.once("ready", async () => {
   if (guild) {
     const config = lerConfig();
     if (config.cargoNaoVerificado && config.cargoMembroVerificado) {
-      console.log('[PERMISSÕES] Cargos configurados. Aplicando permissões...');
       await configurarPermissoesCanais(guild);
-    } else {
-      console.warn('[PERMISSÕES] Cargos não configurados. Use /verificacao configurar e depois /verificacao configurar-permissoes.');
     }
-
     await enviarPainelAvaliacao(guild);
     await enviarPainelFixo(guild);
-    console.log("[PAINEL FIXO] Painel fixo enviado no ready.");
-
-    // Inicia o status se já houver canal configurado
     if (config.canalStatus) {
       await atualizarStatus(guild);
-      // Atualiza a cada 5 minutos
       setInterval(() => atualizarStatus(guild), 5 * 60 * 1000);
+    }
+    if (config.canalPainelCall) {
+      await enviarPainelCall(guild);
     }
   } else {
     console.warn("⚠️ Servidor não encontrado. Verifique o GUILD_ID.");
   }
 
-  // Limpeza de verificações expiradas
   setInterval(() => {
     const agora = Date.now();
     for (const [userId, data] of Object.entries(verificacoesPendentes)) {
@@ -2319,5 +2308,4 @@ client.once("ready", async () => {
   }, 60000);
 });
 
-// =========================== INICIALIZAÇÃO ===========================
 client.login(TOKEN);
