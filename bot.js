@@ -3,7 +3,7 @@ const {
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
   ChannelType, PermissionFlagsBits, StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder,
-  TextInputStyle, AttachmentBuilder
+  TextInputStyle
 } = require("discord.js");
 const fs = require('fs');
 const path = require('path');
@@ -15,6 +15,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildVoiceStates, // necessário para status de voz
   ],
 });
 
@@ -37,8 +38,6 @@ const CARGO_STAFF_ID = "1508405150572871720";
 const CARGO_SUPORTE_ID = "1513399309306036355";
 const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
-const CANAL_LOGS_OFUSCADOR_ID = "1529261917116301503";
-const CANAL_PAINEL_FIXO_ID = "1529916242843144312";
 const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797";
 
 // ========== IDs da configuração de permissões ==========
@@ -54,20 +53,18 @@ const CARGOS_MODERACAO = ["1508405150572871720"];
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000;
 
 // =========================== DADOS EM MEMÓRIA ===========================
-const tickets = {};
-const stickyMessages = {};
-const userChunks = {};
-const ticketTimeouts = {};
+const tickets = {};             // ticketId -> { userId, categoria, staffId, staffTag, abertura, respostas: {}, etapa: 0 }
 const formulariosPendentes = {};
 const formulariosEnviados = {};
-const giveaways = {};
 const avaliacoesPendentes = {};
 const verificacoesPendentes = {};
 const mensagensRecentes = {};
 const monitoramentoAtividade = { contagem: 0, ultimoReset: Date.now() };
+const statusChannelId = { channel: null, messageId: null };  // para o painel de status
 
-// =========================== PALAVRAS PROIBIDAS ===========================
-const PALAVRAS_PROIBIDAS = [
+// =========================== PALAVRAS PROIBIDAS (AGORA COM REGEX) ===========================
+// A lista de palavras será usada para construir regex com \b para casar palavras inteiras.
+const PALAVRAS_PROIBIDAS_BASE = [
   "entra no meu servidor", "meu servidor", "meu discord", "meu server",
   "link da bio", "link na bio", "bio",
   "to vendendo", "vendo", "compro", "troco",
@@ -75,13 +72,42 @@ const PALAVRAS_PROIBIDAS = [
   "segue", "follow", "inscreva-se", "inscrevam-se"
 ];
 
-const PALAVRAS_GRAVES = [
+const PALAVRAS_GRAVES_BASE = [
   "hitler", "nazista", "nazismo", "nazi",
   "racista", "racismo", "fascista", "fascismo",
   "terrorista", "pedofil", "pedofilo",
   "macaco", "macaca",
-  "b1o", "vendas", "venda", "vender",
+  "vendas", "venda", "vender",
 ];
+
+// Construção de regex para palavras inteiras (case insensitive)
+function construirRegex(palavras) {
+  // Escapa caracteres especiais
+  const escaped = palavras.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  // Junta com \b para bordas de palavra, tratando frases com espaços como uma única palavra composta
+  // Para frases, usamos lookahead? Melhor: separar por espaços e casar cada palavra?
+  // Para simplicidade, vamos casar cada palavra individualmente, mas com \b para bordas.
+  // Para frases como "entra no meu servidor", vamos dividir em palavras e casar cada uma com \b.
+  const palavrasIndividuais = [];
+  for (const p of escaped) {
+    if (p.includes(' ')) {
+      // Divide em palavras e adiciona cada uma
+      const partes = p.split(' ');
+      for (const part of partes) {
+        if (part.length > 2) palavrasIndividuais.push(part);
+      }
+    } else {
+      palavrasIndividuais.push(p);
+    }
+  }
+  // Remove duplicatas
+  const unicas = [...new Set(palavrasIndividuais)];
+  // Cria regex com boundaries
+  return new RegExp('\\b(' + unicas.join('|') + ')\\b', 'gi');
+}
+
+const PALAVRAS_PROIBIDAS_REGEX = construirRegex(PALAVRAS_PROIBIDAS_BASE);
+const PALAVRAS_GRAVES_REGEX = construirRegex(PALAVRAS_GRAVES_BASE);
 
 // =========================== FUNÇÕES AUXILIARES ===========================
 function temCargoMod(member) {
@@ -102,13 +128,6 @@ async function enviarLogTicket(guild, embed, files = []) {
     const canal = await guild.channels.fetch(CANAL_LOGS_TICKET_ID).catch(() => null);
     if (canal) await canal.send({ embeds: [embed], files });
   } catch (err) { console.error("[ERRO LOG TICKET]", err.message); }
-}
-
-async function enviarLogOfuscador(guild, embed, files = []) {
-  try {
-    const canal = await guild.channels.fetch(CANAL_LOGS_OFUSCADOR_ID).catch(() => null);
-    if (canal) await canal.send({ embeds: [embed], files });
-  } catch (err) { console.error("[ERRO LOG OFUSCADOR]", err.message); }
 }
 
 async function enviarDMPunicao(user, staffTag, acao, motivo) {
@@ -146,6 +165,7 @@ function lerConfig() {
     if (!config.cargoNaoVerificado) config.cargoNaoVerificado = null;
     if (!config.cargoMembroVerificado) config.cargoMembroVerificado = null;
     if (!config.canalVerificacao) config.canalVerificacao = null;
+    if (!config.canalStatus) config.canalStatus = null;
     return config;
   } catch {
     return {
@@ -153,7 +173,8 @@ function lerConfig() {
       categoriaFormulario: null,
       cargoNaoVerificado: null,
       cargoMembroVerificado: null,
-      canalVerificacao: null
+      canalVerificacao: null,
+      canalStatus: null
     };
   }
 }
@@ -203,51 +224,6 @@ async function configurarPermissoesCanais(guild) {
 
   console.log(`[PERMISSÕES] ${atualizados} canais configurados.`);
   return atualizados;
-}
-
-// =========================== OFUSCADOR ===========================
-function ofuscar(codigo, numChunks) {
-  if (!codigo || codigo.trim() === '') return '';
-  const codigoComNull = "--[[ \x00 ]] " + codigo;
-  let hex = '';
-  for (let i = 0; i < codigoComNull.length; i++) {
-    const code = codigoComNull.charCodeAt(i);
-    hex += '\\x' + code.toString(16).padStart(2, '0');
-  }
-  hex = '\\xef\\xbb\\xbf' + hex;
-  let chunks = [];
-  if (numChunks <= 1) {
-    chunks = [hex];
-  } else {
-    const len = hex.length;
-    let cortes = new Set();
-    while (cortes.size < numChunks - 1) {
-      const pos = Math.floor(Math.random() * (len - 1)) + 1;
-      cortes.add(pos);
-    }
-    let sorted = Array.from(cortes).sort((a, b) => a - b);
-    let start = 0;
-    for (let cut of sorted) {
-      if (cut > start) {
-        chunks.push(hex.substring(start, cut));
-        start = cut;
-      }
-    }
-    if (start < len) chunks.push(hex.substring(start));
-    chunks = chunks.filter(c => c.length > 0);
-    if (chunks.length === 0) chunks = [hex];
-  }
-  let ofuscado = '';
-  const sep = ['..', '.. ', '..  ', ' ..', ' .. ', '\n..\n', '\n.. ', ' ..\n'];
-  for (let i = 0; i < chunks.length; i++) {
-    ofuscado += chunks[i];
-    if (i < chunks.length - 1) {
-      ofuscado += sep[Math.floor(Math.random() * sep.length)];
-    }
-  }
-  const loadOfuscado = '"\\x6c\\x6f\\x61\\x64"';
-  const HEADER = "-----powered by https://discord.gg/tR27QgcHyr\n";
-  return HEADER + `_G[${loadOfuscado}](${ofuscado})()`;
 }
 
 // =========================== PAINEL DE TICKET ===========================
@@ -305,104 +281,7 @@ async function enviarPainelAvaliacao(guild) {
   } catch (err) { console.error("[ERRO PAINEL AVALIACAO]", err.message); }
 }
 
-// =========================== GIVEAWAY ===========================
-async function atualizarGiveaway(messageId) {
-  const giveaway = giveaways[messageId];
-  if (!giveaway || giveaway.ended) return;
-  const agora = Date.now();
-  const tempoRestante = giveaway.endTime - agora;
-  if (tempoRestante <= 0) {
-    await finalizarGiveaway(messageId);
-    return;
-  }
-  const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
-  if (!canal) return;
-  const msg = await canal.messages.fetch(messageId).catch(() => null);
-  if (!msg) return;
-  const embed = new EmbedBuilder()
-    .setTitle(`🎉 GIVEAWAY: ${giveaway.prize}`)
-    .setColor("Gold")
-    .setDescription(`Clique no botão **Participar** para concorrer!\n\n**Tempo restante:** ${formatarTempo(tempoRestante)}\n**Vencedores:** ${giveaway.winners}\n**Participantes:** ${giveaway.entered.length}`)
-    .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"} • ID: ${messageId}` })
-    .setTimestamp();
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`giveaway_join_${messageId}`)
-      .setLabel("🎁 Participar")
-      .setStyle(ButtonStyle.Primary)
-  );
-  await msg.edit({ embeds: [embed], components: [row] });
-}
-
-async function finalizarGiveaway(messageId) {
-  const giveaway = giveaways[messageId];
-  if (!giveaway || giveaway.ended) return;
-  giveaway.ended = true;
-  const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
-  if (!canal) return;
-  const msg = await canal.messages.fetch(messageId).catch(() => null);
-  if (!msg) return;
-  const participantes = giveaway.entered;
-  let vencedores = [];
-  const numeroVencedores = Math.min(giveaway.winners, participantes.length);
-  if (participantes.length === 0) {
-    const embed = new EmbedBuilder()
-      .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
-      .setColor("Red")
-      .setDescription(`😢 Ninguém participou deste giveaway!`)
-      .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"}` })
-      .setTimestamp();
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`giveaway_ended_${messageId}`)
-        .setLabel("❌ Encerrado")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(true)
-    );
-    await msg.edit({ embeds: [embed], components: [row] });
-    delete giveaways[messageId];
-    return;
-  }
-  const shuffled = [...participantes];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  vencedores = shuffled.slice(0, numeroVencedores);
-  giveaway.winnerIds = vencedores;
-  const mencoes = vencedores.map(id => `<@${id}>`).join(", ");
-  const embed = new EmbedBuilder()
-    .setTitle(`🎉 GIVEAWAY ENCERRADO: ${giveaway.prize}`)
-    .setColor("Green")
-    .setDescription(`**Vencedor(es):** ${mencoes}\n\nParabéns aos ganhadores!`)
-    .addFields(
-      { name: "Total de participantes", value: `${participantes.length}`, inline: true },
-      { name: "Número de vencedores", value: `${vencedores.length}`, inline: true }
-    )
-    .setFooter({ text: `Host: ${giveaway.hostTag || "Desconhecido"}` })
-    .setTimestamp();
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`giveaway_ended_${messageId}`)
-      .setLabel("✅ Encerrado")
-      .setStyle(ButtonStyle.Success)
-      .setDisabled(true)
-  );
-  await msg.edit({ embeds: [embed], components: [row] });
-  const logEmbed = new EmbedBuilder()
-    .setTitle("🎁 Giveaway Finalizado")
-    .setColor("Green")
-    .addFields(
-      { name: "Prêmio", value: giveaway.prize },
-      { name: "Vencedores", value: mencoes || "Nenhum" },
-      { name: "Participantes", value: `${participantes.length}` }
-    )
-    .setTimestamp();
-  await enviarLogMod(canal.guild, logEmbed);
-  delete giveaways[messageId];
-}
-
-// =========================== PERGUNTAS DO FORMULÁRIO ===========================
+// =========================== PERGUNTAS DO FORMULÁRIO DE STAFF ===========================
 const PERGUNTAS = [
   {
     id: 'nome',
@@ -465,7 +344,7 @@ const PERGUNTAS = [
   }
 ];
 
-// =========================== FUNÇÕES DO FORMULÁRIO ===========================
+// =========================== FUNÇÕES DO FORMULÁRIO DE STAFF ===========================
 async function enviarPainelFormulario(guild) {
   const config = lerConfig();
   const canalId = config.canalFormulario;
@@ -774,7 +653,7 @@ async function enviarWebhookExecutores(guild) {
 
 async function enviarPainelFixo(guild) {
   const config = carregarExecutores();
-  const canalId = config.canalPainelFixo || CANAL_PAINEL_FIXO_ID;
+  const canalId = config.canalPainelFixo;
   const canal = await guild.channels.fetch(canalId).catch(() => null);
   if (!canal) {
     console.warn('[PAINEL FIXO] Canal não encontrado.');
@@ -828,7 +707,7 @@ async function enviarPainelFixo(guild) {
 
 async function atualizarPainelFixo(guild) {
   const config = carregarExecutores();
-  const canalId = config.canalPainelFixo || CANAL_PAINEL_FIXO_ID;
+  const canalId = config.canalPainelFixo;
   const canal = await guild.channels.fetch(canalId).catch(() => null);
   if (!canal) return;
   const msgs = await canal.messages.fetch({ limit: 5 }).catch(() => []);
@@ -881,7 +760,7 @@ async function atualizarPainelFixo(guild) {
   console.log('[PAINEL FIXO] Painel atualizado.');
 }
 
-// =========================== SISTEMA DE VERIFICAÇÃO (EPHEMERAL + MODAL) ===========================
+// =========================== SISTEMA DE VERIFICAÇÃO ===========================
 function gerarCodigoVerificacao() {
   const letras = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let codigo = '';
@@ -954,40 +833,144 @@ async function processarVerificacaoModal(interaction) {
   }
 }
 
-// =========================== FUNÇÕES COMPLEMENTARES ===========================
-async function deleteChannel(channelId) {
-  if (userChunks[channelId]) {
-    clearTimeout(userChunks[channelId].timeout);
-    delete userChunks[channelId];
-  }
+// =========================== SISTEMA DE STATUS (IDeia 7) ===========================
+async function atualizarStatus(guild) {
   try {
-    const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (channel && channel.deletable) {
-      await channel.delete('Ticket de ofuscador inativo.');
-      console.log(`🗑️ Canal de ofuscador ${channelId} deletado.`);
+    const config = lerConfig();
+    const canalId = config.canalStatus;
+    if (!canalId) return;
+    const canal = await guild.channels.fetch(canalId).catch(() => null);
+    if (!canal) return;
+
+    // Buscar dados
+    const members = await guild.members.fetch();
+    const total = members.size;
+    const bots = members.filter(m => m.user.bot).size;
+    const humanos = total - bots;
+    const online = members.filter(m => m.presence?.status === 'online' || m.presence?.status === 'idle' || m.presence?.status === 'dnd').size;
+    const emVoz = guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice).reduce((acc, ch) => acc + ch.members.size, 0);
+    const staffOnline = members.filter(m => {
+      if (m.user.bot) return false;
+      return m.roles.cache.some(r => CARGOS_MODERACAO.includes(r.id)) && (m.presence?.status === 'online' || m.presence?.status === 'idle' || m.presence?.status === 'dnd');
+    }).size;
+
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Status do Servidor')
+      .setColor('Blue')
+      .setThumbnail(guild.iconURL())
+      .addFields(
+        { name: '👥 Total de membros', value: `${total}`, inline: true },
+        { name: '🧑 Humanos', value: `${humanos}`, inline: true },
+        { name: '🤖 Bots', value: `${bots}`, inline: true },
+        { name: '🟢 Online (geral)', value: `${online}`, inline: true },
+        { name: '🎤 Em canais de voz', value: `${emVoz}`, inline: true },
+        { name: '🛡️ Staff online', value: `${staffOnline}`, inline: true }
+      )
+      .setTimestamp()
+      .setFooter({ text: 'Atualizado a cada 5 minutos' });
+
+    // Envia ou edita a mensagem fixa
+    const msgId = statusChannelId.messageId;
+    if (msgId) {
+      try {
+        const msg = await canal.messages.fetch(msgId);
+        await msg.edit({ embeds: [embed] });
+      } catch {
+        // Mensagem não encontrada, enviar nova
+        const msg = await canal.send({ embeds: [embed] });
+        statusChannelId.messageId = msg.id;
+      }
+    } else {
+      const msg = await canal.send({ embeds: [embed] });
+      statusChannelId.messageId = msg.id;
     }
-  } catch (error) {
-    console.error(`Erro ao deletar canal ${channelId}:`, error);
+  } catch (err) {
+    console.error('[STATUS] Erro ao atualizar status:', err);
   }
 }
 
-async function enviarAvaliacaoDM(user, staffTag, categoria, guild) {
-  try {
-    const embed = new EmbedBuilder()
-      .setTitle("⭐ Avalie o atendimento!")
-      .setColor("Gold")
-      .setDescription(`Seu ticket foi fechado.\n\n**Staff que te atendeu:** ${staffTag}\n**Categoria:** ${categoria}\n\nComo você avalia o atendimento?`)
-      .setFooter({ text: "Clique em uma estrela para avaliar" });
-    const botoes = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("avaliacao_ticket_1").setLabel("⭐").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("avaliacao_ticket_2").setLabel("⭐⭐").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("avaliacao_ticket_3").setLabel("⭐⭐⭐").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("avaliacao_ticket_4").setLabel("⭐⭐⭐⭐").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("avaliacao_ticket_5").setLabel("⭐⭐⭐⭐⭐").setStyle(ButtonStyle.Success)
-    );
-    await user.send({ embeds: [embed], components: [botoes] });
-    avaliacoesPendentes[user.id] = { staffTag, categoria, guildId: guild.id };
-  } catch (err) { console.error("[ERRO DM AVALIAÇÃO]", err.message); }
+// =========================== SISTEMA DE TICKET AUTOMATIZADO (IDeia 25) ===========================
+// Perguntas para o ticket automatizado
+const TICKET_PERGUNTAS = [
+  { id: 'problema', label: 'Descreva seu problema em detalhes:', required: true },
+  { id: 'urgencia', label: 'Qual a urgência? (baixa/média/alta)', required: true },
+  { id: 'tentativa', label: 'O que você já tentou fazer para resolver?', required: false }
+];
+
+// Ao criar um ticket, inicia o fluxo de perguntas
+async function iniciarTicketAutomatizado(channel, userId) {
+  const ticket = tickets[channel.id];
+  if (!ticket) return;
+
+  // Envia embed com as perguntas
+  const embed = new EmbedBuilder()
+    .setTitle('📋 Informações do Ticket')
+    .setColor('Blue')
+    .setDescription('Por favor, responda às perguntas abaixo para agilizar o atendimento.\n\n**Digite suas respostas neste canal.**');
+  for (const pergunta of TICKET_PERGUNTAS) {
+    embed.addFields({ name: pergunta.label, value: pergunta.required ? '*(obrigatório)*' : '*(opcional)*', inline: false });
+  }
+  embed.setFooter({ text: 'Digite "cancelar" para fechar o ticket.' });
+
+  await channel.send({ content: `<@${userId}>`, embeds: [embed] });
+
+  // Inicia a coleta de respostas
+  ticket.respostas = {};
+  ticket.etapa = 0;
+}
+
+// Função para processar respostas do ticket automatizado
+async function processarRespostaTicket(message) {
+  const channel = message.channel;
+  const ticket = tickets[channel.id];
+  if (!ticket) return;
+  if (message.author.id !== ticket.userId) return; // só o autor responde
+
+  if (message.content.toLowerCase() === 'cancelar') {
+    delete tickets[channel.id];
+    await channel.send('❌ Ticket cancelado pelo usuário.');
+    setTimeout(() => channel.delete().catch(() => {}), 3000);
+    return;
+  }
+
+  const etapa = ticket.etapa;
+  if (etapa >= TICKET_PERGUNTAS.length) return; // já respondeu tudo
+
+  const pergunta = TICKET_PERGUNTAS[etapa];
+  const resposta = message.content.trim();
+  if (pergunta.required && !resposta) {
+    await message.reply('❌ Esta pergunta é obrigatória. Por favor, responda.');
+    return;
+  }
+
+  // Armazena resposta
+  ticket.respostas[pergunta.id] = resposta || '(não respondeu)';
+  ticket.etapa++;
+
+  await message.reply(`✅ Resposta registrada!`);
+
+  // Próxima pergunta ou finaliza
+  if (ticket.etapa < TICKET_PERGUNTAS.length) {
+    const proxPergunta = TICKET_PERGUNTAS[ticket.etapa];
+    await channel.send(`**${proxPergunta.label}** ${proxPergunta.required ? '(obrigatório)' : '(opcional)'}`);
+  } else {
+    // Todas respondidas
+    await channel.send('✅ Obrigado! Suas respostas foram registradas. Aguarde o atendimento da staff.');
+
+    // Envia as respostas para o log da staff (opcional)
+    const embedLog = new EmbedBuilder()
+      .setTitle('📋 Respostas do Ticket Automatizado')
+      .setColor('Green')
+      .addFields(
+        { name: 'Usuário', value: `<@${ticket.userId}>`, inline: true },
+        { name: 'Categoria', value: ticket.categoria, inline: true }
+      );
+    for (const p of TICKET_PERGUNTAS) {
+      embedLog.addFields({ name: p.label, value: ticket.respostas[p.id] || 'Não respondeu', inline: false });
+    }
+    embedLog.setTimestamp();
+    await enviarLogTicket(message.guild, embedLog);
+  }
 }
 
 // =========================== EVENTOS ===========================
@@ -1025,78 +1008,12 @@ client.on("guildMemberAdd", async (member) => {
 // ---- MENSAGENS (UNIFICADO) ----
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-
   if (!message.guild) return;
   const member = message.member;
 
-  // --- Sticky ---
-  if (message.content.startsWith(".st")) {
-    if (!temCargoMod(member)) return message.reply("❌ Você não tem permissão para usar este comando.");
-    const args = message.content.slice(3).trim();
-    const channelId = message.channel.id;
-    if (!args) {
-      if (stickyMessages[channelId]) {
-        const old = stickyMessages[channelId];
-        try {
-          const oldMsg = await message.channel.messages.fetch(old.messageId);
-          if (oldMsg) await oldMsg.delete();
-        } catch {}
-        delete stickyMessages[channelId];
-        await message.reply("✅ Sticky desativado neste canal.");
-      } else {
-        await message.reply("ℹ️ Não há sticky ativo neste canal.");
-      }
-      return;
-    }
-    const content = args;
-    await message.delete().catch(() => {});
-    const sent = await message.channel.send(content);
-    stickyMessages[channelId] = { content, messageId: sent.id };
-    await message.author.send({ embeds: [new EmbedBuilder().setTitle("📌 Sticky ativado!").setColor("Green").setDescription(`Sticky definida no canal <#${channelId}>:\n\n${content}`).setTimestamp()] }).catch(() => {});
-    return;
-  }
-
-  // Manter sticky
-  const sticky = stickyMessages[message.channel.id];
-  if (sticky) {
-    if (message.author.id === client.user.id && message.id === sticky.messageId) return;
-    try {
-      const oldMsg = await message.channel.messages.fetch(sticky.messageId).catch(() => null);
-      if (oldMsg) await oldMsg.delete().catch(() => {});
-      const newMsg = await message.channel.send(sticky.content);
-      sticky.messageId = newMsg.id;
-    } catch (err) {
-      console.error("[ERRO STICKY]", err.message);
-    }
-  }
-
-  // --- Anti-Spam por repetição ---
-  if (!mensagensRecentes[message.author.id]) mensagensRecentes[message.author.id] = [];
-  const msgs = mensagensRecentes[message.author.id];
-  const repetida = msgs.some(m => m.content === message.content && m.channelId !== message.channel.id);
-  if (repetida && !temCargoMod(member)) {
-    try { await message.delete(); } catch {}
-    try {
-      await message.member.timeout(5 * 60 * 1000, 'Anti-spam: mensagem repetida em múltiplos canais');
-      await message.channel.send(`⚠️ ${message.author}, você está repetindo a mesma mensagem em vários canais. Foi mutado por 5 minutos.`);
-      await enviarLogMod(message.guild, new EmbedBuilder()
-        .setTitle('🔄 Anti-Spam (Repetição)')
-        .setColor('Orange')
-        .addFields(
-          { name: 'Usuário', value: message.author.tag },
-          { name: 'Mensagem', value: message.content.slice(0, 200) }
-        )
-        .setTimestamp());
-    } catch {}
-    return;
-  }
-  msgs.push({ content: message.content, channelId: message.channel.id, timestamp: Date.now() });
-  if (msgs.length > 5) msgs.shift();
-
-  // --- Bloqueio de palavras-chave ---
-  const conteudo = message.content.toLowerCase();
-  const contemPalavraProibida = PALAVRAS_PROIBIDAS.some(palavra => conteudo.includes(palavra));
-  if (contemPalavraProibida && !temCargoMod(member)) {
+  // --- Auto mod: palavras proibidas (usando regex) ---
+  const conteudo = message.content;
+  if (PALAVRAS_PROIBIDAS_REGEX.test(conteudo) && !temCargoMod(member)) {
     try { await message.delete(); } catch {}
     try {
       await message.member.timeout(10 * 60 * 1000, 'Divulgação/propaganda não autorizada');
@@ -1113,25 +1030,82 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- Flood ---
+  // --- Palavras graves ---
+  if (PALAVRAS_GRAVES_REGEX.test(conteudo) && !temCargoMod(member)) {
+    try { await message.delete(); } catch {}
+    try {
+      await message.member.timeout(5 * 60 * 1000, "Automod: conteúdo proibido");
+      await message.channel.send(`⚠️ ${message.author}, esse tipo de conteúdo não é permitido aqui! Você foi mutado por 5 minutos.`);
+      await enviarLogMod(message.guild, new EmbedBuilder()
+        .setTitle("🚫 Conteúdo Proibido").setColor("DarkRed")
+        .addFields(
+          { name: "Usuário", value: `${message.author.tag} (\`${message.author.id}\`)` },
+          { name: "Canal", value: `<#${message.channel.id}>` },
+          { name: "Mensagem", value: `||${message.content.slice(0, 200)}||` },
+          { name: "Duração", value: "5 minutos" }
+        )
+        .setTimestamp());
+    } catch (err) { console.error("[ERRO MUTE GRAVE]", err.message); }
+    return;
+  }
+
+  // --- Flood (limite: 8 mensagens em 5 segundos) ---
   if (!client.floodUsers) client.floodUsers = {};
   const user = client.floodUsers[message.author.id] || { count: 0, timer: null };
   user.count++;
   if (user.timer) clearTimeout(user.timer);
   user.timer = setTimeout(() => { delete client.floodUsers[message.author.id]; }, 5000);
   client.floodUsers[message.author.id] = user;
-  if (user.count > 5) {
+  if (user.count > 8) {
     try { await message.delete(); } catch {}
     try {
       await message.member.timeout(60 * 1000, "Automod: flood");
       await message.channel.send(`⚠️ ${message.author}, pare de floodar! Você foi mutado por 1 minuto.`);
       await enviarLogMod(message.guild, new EmbedBuilder()
         .setTitle("🌊 Flood Detectado").setColor("Red")
-        .addFields({ name: "Usuário", value: `${message.author.tag} (\`${message.author.id}\`)` }, { name: "Canal", value: `<#${message.channel.id}>` }, { name: "Mensagens", value: `${user.count}` }, { name: "Duração", value: "1 minuto" })
+        .addFields(
+          { name: "Usuário", value: `${message.author.tag} (\`${message.author.id}\`)` },
+          { name: "Canal", value: `<#${message.channel.id}>` },
+          { name: "Mensagens", value: `${user.count}` },
+          { name: "Duração", value: "1 minuto" }
+        )
         .setTimestamp());
     } catch (err) { console.error("[ERRO MUTE FLOOD]", err.message); }
     return;
   }
+
+  // --- Repetição de mensagem em múltiplos canais (agora mais brando) ---
+  if (!mensagensRecentes[message.author.id]) mensagensRecentes[message.author.id] = [];
+  const msgs = mensagensRecentes[message.author.id];
+  // Verifica se a mesma mensagem foi enviada em 3 ou mais canais diferentes nos últimos 60 segundos
+  const canaisDiferentes = new Set();
+  const agora = Date.now();
+  for (const m of msgs) {
+    if (m.content === message.content && (agora - m.timestamp) < 60000) {
+      canaisDiferentes.add(m.channelId);
+    }
+  }
+  // Inclui o canal atual
+  canaisDiferentes.add(message.channel.id);
+
+  if (canaisDiferentes.size >= 3 && !temCargoMod(member)) {
+    try { await message.delete(); } catch {}
+    try {
+      await message.member.timeout(5 * 60 * 1000, 'Anti-spam: mensagem repetida em múltiplos canais');
+      await message.channel.send(`⚠️ ${message.author}, você está repetindo a mesma mensagem em vários canais. Foi mutado por 5 minutos.`);
+      await enviarLogMod(message.guild, new EmbedBuilder()
+        .setTitle('🔄 Anti-Spam (Repetição)')
+        .setColor('Orange')
+        .addFields(
+          { name: 'Usuário', value: message.author.tag },
+          { name: 'Mensagem', value: message.content.slice(0, 200) }
+        )
+        .setTimestamp());
+    } catch {}
+    return;
+  }
+  msgs.push({ content: message.content, channelId: message.channel.id, timestamp: Date.now() });
+  if (msgs.length > 10) msgs.shift();
 
   // --- @everyone/@here ---
   if (message.content.includes("@everyone") || message.content.includes("@here")) {
@@ -1153,27 +1127,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // --- Palavras graves ---
-  const isStaff = message.member.roles.cache.some((r) => CARGOS_MODERACAO.includes(r.id));
-  if (!isStaff && PALAVRAS_GRAVES.some(p => new RegExp(`\\b${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}+\\b`, "gi").test(message.content))) {
-    try { await message.delete(); } catch {}
-    try {
-      await message.member.timeout(5 * 60 * 1000, "Automod: conteúdo proibido");
-      await message.channel.send(`⚠️ ${message.author}, esse tipo de conteúdo não é permitido aqui! Você foi mutado por 5 minutos.`);
-      await enviarLogMod(message.guild, new EmbedBuilder()
-        .setTitle("🚫 Conteúdo Proibido").setColor("DarkRed")
-        .addFields(
-          { name: "Usuário", value: `${message.author.tag} (\`${message.author.id}\`)` },
-          { name: "Canal", value: `<#${message.channel.id}>` },
-          { name: "Mensagem", value: `||${message.content.slice(0, 200)}||` },
-          { name: "Duração", value: "5 minutos" }
-        )
-        .setTimestamp());
-    } catch (err) { console.error("[ERRO MUTE GRAVE]", err.message); }
-    return;
-  }
-
-  // --- Formulário ---
+  // --- Formulário de staff ---
   const estadoForm = formulariosPendentes[message.channel.id];
   if (estadoForm) {
     if (message.author.id !== estadoForm.userId) return;
@@ -1208,52 +1162,16 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- Ofuscador ---
-  const channelId = message.channel.id;
-  const data = userChunks[channelId];
-  if (data) {
-    clearTimeout(data.timeout);
-    data.timeout = setTimeout(() => { deleteChannel(channelId); }, INACTIVITY_TIMEOUT);
-    if (message.attachments.size === 0) {
-      return message.reply('📎 Por favor, envie um arquivo **.txt** com seu código.');
+  // --- Ticket automatizado (coleta de respostas) ---
+  const ticket = tickets[message.channel.id];
+  if (ticket && ticket.etapa !== undefined && ticket.etapa < TICKET_PERGUNTAS.length) {
+    if (message.author.id === ticket.userId) {
+      await processarRespostaTicket(message);
+      return;
     }
-    const attachment = message.attachments.first();
-    if (!attachment.name.endsWith('.txt')) {
-      return message.reply('❌ Apenas arquivos **.txt** são aceitos.');
-    }
-    try {
-      const response = await fetch(attachment.url);
-      const codigoCru = await response.text();
-      if (!codigoCru || codigoCru.trim().length === 0) {
-        return message.reply('❌ O arquivo está vazio. Envie um código válido.');
-      }
-      const numChunks = data.chunks || 6;
-      const codigoOfuscado = ofuscar(codigoCru, numChunks);
-      const buffer = Buffer.from(codigoOfuscado, 'utf-8');
-      const attachmentOfuscado = new AttachmentBuilder(buffer, { name: 'script_ofuscado.txt' });
-      await message.reply({
-        content: '✅ **Código ofuscado com sucesso!** Aqui está seu arquivo:',
-        files: [attachmentOfuscado]
-      });
-      const embedLog = new EmbedBuilder()
-        .setColor("Red")
-        .setTitle("📥 Código cru recebido para ofuscação")
-        .addFields(
-          { name: "Autor", value: `${message.author.tag} (${message.author.id})` },
-          { name: "Fragmentos", value: `${numChunks}` },
-          { name: "Tamanho", value: `${codigoCru.length} caracteres` }
-        )
-        .setTimestamp();
-      const logAttachment = new AttachmentBuilder(Buffer.from(codigoCru, 'utf-8'), { name: `codigo_cru_${message.author.id}.txt` });
-      await enviarLogOfuscador(message.guild, embedLog, [logAttachment]);
-    } catch (error) {
-      console.error('Erro ao processar arquivo de ofuscador:', error);
-      await message.reply('❌ Ocorreu um erro ao processar seu arquivo. Tente novamente.');
-    }
-    return;
   }
 
-  // Monitoramento de atividade
+  // Monitoramento de atividade (para pico de mensagens)
   monitoramentoAtividade.contagem++;
 });
 
@@ -1261,18 +1179,16 @@ client.on("messageCreate", async (message) => {
 client.on("interactionCreate", async (interaction) => {
   // ---- BOTÕES ----
   if (interaction.isButton()) {
-    // ========== VERIFICAÇÃO - BOTÃO PRINCIPAL ==========
+    // ========== VERIFICAÇÃO ==========
     if (interaction.customId === 'verificar_geral') {
       const userId = interaction.user.id;
       const config = lerConfig();
       const cargoMembro = config.cargoMembroVerificado;
 
-      // Verifica se já está verificado
       if (cargoMembro && interaction.member.roles.cache.has(cargoMembro)) {
         return interaction.reply({ content: '✅ Você já está verificado!', ephemeral: true });
       }
 
-      // Verifica se já tem pendente
       if (verificacoesPendentes[userId]) {
         return interaction.reply({ 
           content: '⏳ Você já tem um código pendente. Verifique a mensagem anterior (só você vê).', 
@@ -1280,7 +1196,6 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      // Gera código
       const codigo = gerarCodigoVerificacao();
       verificacoesPendentes[userId] = {
         codigo,
@@ -1288,7 +1203,6 @@ client.on("interactionCreate", async (interaction) => {
         timestamp: Date.now()
       };
 
-      // Envia a mensagem ephemeral com o código + botão para abrir o modal
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('abrir_modal_codigo')
@@ -1305,7 +1219,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ========== VERIFICAÇÃO - BOTÃO QUE ABRE O MODAL ==========
     if (interaction.customId === 'abrir_modal_codigo') {
       const userId = interaction.user.id;
       const pendente = verificacoesPendentes[userId];
@@ -1324,7 +1237,6 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      // Abre o modal
       const modal = new ModalBuilder()
         .setCustomId('modal_verificacao')
         .setTitle('Verificação de Segurança');
@@ -1343,22 +1255,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Ticket: Dúvidas (formulário antigo) ----
-    if (interaction.customId === "formulario_duvidas") {
-      const select = new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId("ticket_categoria")
-          .setPlaceholder("Escolha uma opção para sua Dúvida.")
-          .addOptions(
-            new StringSelectMenuOptionBuilder().setLabel("📜 Dúvida sobre o formulário").setDescription("Tire suas dúvidas sobre o processo seletivo").setValue("duvida_formulario").setEmoji("📜"),
-            new StringSelectMenuOptionBuilder().setLabel("📜 Dúvida Script").setDescription("Dúvidas sobre scripts").setValue("duvida_script").setEmoji("📜"),
-            new StringSelectMenuOptionBuilder().setLabel("⚙️ Dúvida Executor").setDescription("Dúvidas sobre executores").setValue("duvida_executor").setEmoji("⚙️"),
-            new StringSelectMenuOptionBuilder().setLabel("💬 Outros").setDescription("Outros assuntos").setValue("outros").setEmoji("💬")
-          )
-      );
-      await interaction.reply({ content: "Escolha o motivo para abrir seu ticket:", components: [select], flags: 64 });
-      return;
-    }
+    // ---- Ticket: abrir ticket via menu (já tratado no select) ----
 
     // ---- Avaliação ----
     if (interaction.customId === "abrir_modal_avaliacao") {
@@ -1427,6 +1324,16 @@ client.on("interactionCreate", async (interaction) => {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode reivindicar tickets!", flags: 64 });
       ticket.staffId = interaction.user.id;
       ticket.staffTag = interaction.user.tag;
+
+      // Se o ticket ainda não tiver respostas, exibe as respostas coletadas
+      let respostasText = '';
+      if (ticket.respostas && Object.keys(ticket.respostas).length > 0) {
+        respostasText = '\n\n**Respostas do usuário:**\n';
+        for (const p of TICKET_PERGUNTAS) {
+          respostasText += `**${p.label}** ${ticket.respostas[p.id] || 'Não respondeu'}\n`;
+        }
+      }
+
       const embedAtualizado = new EmbedBuilder()
         .setTitle(`🎫 Ticket — ${ticket.categoria}`).setColor("Green")
         .setThumbnail("https://i.imgur.com/6sSikdc.png")
@@ -1437,6 +1344,10 @@ client.on("interactionCreate", async (interaction) => {
           { name: "🛠️ Atendente", value: `${interaction.user}` }
         )
         .setFooter({ text: "Scripts SDZ • Suporte" }).setTimestamp();
+      if (respostasText) {
+        embedAtualizado.addFields({ name: "📋 Informações adicionais", value: respostasText });
+      }
+
       try {
         await interaction.message.edit({ embeds: [embedAtualizado], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("fechar_ticket").setLabel("🔒 Fechar Ticket").setStyle(ButtonStyle.Danger))] });
       } catch {}
@@ -1513,59 +1424,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Ofuscador - escolha de chunks ----
-    if (interaction.customId.startsWith("chunks_")) {
-      const chunks = parseInt(interaction.customId.split("_")[1]);
-      const channelId = interaction.channel.id;
-      if (!userChunks[channelId]) {
-        return interaction.reply({ content: "❌ Este ticket expirou ou não existe mais.", ephemeral: true });
-      }
-      userChunks[channelId].chunks = chunks;
-      clearTimeout(userChunks[channelId].timeout);
-      userChunks[channelId].timeout = setTimeout(() => { deleteChannel(channelId); }, INACTIVITY_TIMEOUT);
-      await interaction.reply({
-        content: `✅ Fragmentos definidos para **${chunks}**. Agora envie seu código em um arquivo **.txt** neste canal.`,
-        ephemeral: false
-      });
-      try {
-        const embed = new EmbedBuilder()
-          .setColor(0xF5D742)
-          .setTitle('🧢 OFUSCADOR DO SEU ZÉ')
-          .setDescription(`**Fragmentos selecionados: ${chunks}**\n\nAgora envie seu código como **anexo .txt**.\n\n⚠️ O código será ofuscado e devolvido em um novo .txt.`)
-          .setFooter({ text: 'Seu código não é armazenado permanentemente.' });
-        await interaction.message.edit({ embeds: [embed], components: [] });
-      } catch {}
-      return;
-    }
-
-    // ---- Giveaway - participar ----
-    if (interaction.customId.startsWith("giveaway_join_")) {
-      const messageId = interaction.customId.replace("giveaway_join_", "");
-      const giveaway = giveaways[messageId];
-      if (!giveaway || giveaway.ended) {
-        return interaction.reply({ content: "❌ Este giveaway já foi encerrado ou não existe mais.", flags: 64 });
-      }
-      if (giveaway.requiredRole) {
-        const member = interaction.member;
-        if (!member.roles.cache.has(giveaway.requiredRole)) {
-          const role = await interaction.guild.roles.fetch(giveaway.requiredRole).catch(() => null);
-          return interaction.reply({ content: `❌ Você precisa do cargo **${role ? role.name : "desconhecido"}** para participar!`, flags: 64 });
-        }
-      }
-      if (giveaway.entered.includes(interaction.user.id)) {
-        return interaction.reply({ content: "❌ Você já está participando!", flags: 64 });
-      }
-      giveaway.entered.push(interaction.user.id);
-      await interaction.reply({ content: "✅ Você entrou no giveaway! Boa sorte! 🍀", flags: 64 });
-      await atualizarGiveaway(messageId);
-      return;
-    }
-
-    if (interaction.customId.startsWith("giveaway_ended_")) {
-      return interaction.reply({ content: "Este giveaway já foi encerrado.", flags: 64 });
-    }
-
-    // ---- Formulário - Iniciar ----
+    // ---- Formulário de staff - Iniciar ----
     if (interaction.customId === "formulario_iniciar") {
       const userId = interaction.user.id;
       for (const [channelId, estado] of Object.entries(formulariosPendentes)) {
@@ -1701,13 +1560,13 @@ client.on("interactionCreate", async (interaction) => {
 
   // ---- MODAIS ----
   if (interaction.isModalSubmit()) {
-    // ========== VERIFICAÇÃO - MODAL ==========
+    // Verificação
     if (interaction.customId === 'modal_verificacao') {
       await processarVerificacaoModal(interaction);
       return;
     }
 
-    // ---- Avaliação ----
+    // Avaliação staff
     if (interaction.customId === "modal_avaliacao_staff") {
       const staffName = interaction.fields.getTextInputValue("staff_name_input");
       const comment = interaction.fields.getTextInputValue("comment_input");
@@ -1736,7 +1595,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Webhook - Editar executor (modal) ----
+    // Webhook - Editar executor (modal)
     if (interaction.customId.startsWith('exec_modal_')) {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
       const id = interaction.customId.replace('exec_modal_', '');
@@ -1773,47 +1632,90 @@ client.on("interactionCreate", async (interaction) => {
     const ticketExistente = Object.values(tickets).find((t) => t.userId === userId);
     if (ticketExistente) return interaction.reply({ content: "❌ Você já tem um ticket aberto!", flags: 64 });
     await interaction.deferReply({ flags: 64 });
+
     const nomes = {
-      duvida_formulario: "📜 Dúvida sobre Formulário",
       duvida_script: "📜 Dúvida Script",
       duvida_executor: "⚙️ Dúvida Executor",
       outros: "💬 Outros"
     };
     const nomeCategoria = nomes[categoria] || categoria;
     const nomeCanal = `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+
     try {
+      // ----- CORREÇÃO DE PERMISSÕES AQUI -----
+      // Vamos negar ViewChannel para todos os cargos, exceto o autor, staff e suporte.
+      // Primeiro, obtemos todos os cargos do servidor.
+      const todosCargos = await guild.roles.fetch();
+      const permissoes = [
+        // Negar para @everyone
+        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        // Permitir para o autor
+        { id: userId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+        // Permitir para staff e suporte
+        { id: CARGO_STAFF_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+        { id: CARGO_SUPORTE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+        // Permitir para o próprio bot
+        { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
+      ];
+
+      // Agora, para todos os outros cargos (exceto os já listados), negamos ViewChannel
+      const cargosParaNegar = todosCargos.filter(r => 
+        r.id !== guild.roles.everyone.id && 
+        r.id !== CARGO_STAFF_ID && 
+        r.id !== CARGO_SUPORTE_ID && 
+        r.id !== guild.members.me.id
+      );
+      for (const cargo of cargosParaNegar.values()) {
+        permissoes.push({ id: cargo.id, deny: [PermissionFlagsBits.ViewChannel] });
+      }
+
       const canalTicket = await guild.channels.create({
-        name: nomeCanal, type: ChannelType.GuildText, parent: CATEGORIA_TICKETS_ID,
-        permissionOverwrites: [
-          { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: userId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-          { id: CARGO_SUPORTE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-          { id: CARGO_STAFF_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-        ],
+        name: nomeCanal,
+        type: ChannelType.GuildText,
+        parent: CATEGORIA_TICKETS_ID,
+        permissionOverwrites: permissoes,
       });
+
       const agora = Date.now();
-      tickets[canalTicket.id] = { userId, categoria: nomeCategoria, staffId: null, staffTag: null, abertura: agora };
+      tickets[canalTicket.id] = {
+        userId,
+        categoria: nomeCategoria,
+        staffId: null,
+        staffTag: null,
+        abertura: agora,
+        respostas: {},  // para armazenar as respostas do ticket automatizado
+        etapa: 0
+      };
+
+      // Envia embed inicial do ticket
       const embed = new EmbedBuilder()
         .setTitle(`🎫 Ticket — ${nomeCategoria}`).setColor("Blue")
         .setThumbnail("https://i.imgur.com/6sSikdc.png")
-        .setDescription(`Olá ${interaction.user}! 👋\n\nSeu ticket foi aberto na categoria **${nomeCategoria}**.\nNossa equipe irá te atender o mais rápido possível!\n\n📌 **Descreva seu problema com detalhes.**\n⏰ Abertura: <t:${Math.floor(agora / 1000)}:F>`)
+        .setDescription(`Olá ${interaction.user}! 👋\n\nSeu ticket foi aberto na categoria **${nomeCategoria}**.\nNossa equipe irá te atender o mais rápido possível!\n\n⏰ Abertura: <t:${Math.floor(agora / 1000)}:F>`)
         .addFields(
           { name: "👤 Usuário", value: `${interaction.user}` },
           { name: "📂 Categoria", value: nomeCategoria },
           { name: "🛠️ Suporte", value: `<@&${CARGO_SUPORTE_ID}>` }
         )
         .setFooter({ text: "Scripts SDZ • Suporte" }).setTimestamp();
+
       const botoes = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("reivindicar_ticket").setLabel("🙋 Reivindicar Ticket").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("fechar_ticket").setLabel("🔒 Fechar Ticket").setStyle(ButtonStyle.Danger),
       );
+
       await canalTicket.send({ content: `${interaction.user} | <@&${CARGO_SUPORTE_ID}>`, embeds: [embed], components: [botoes] });
+
+      // Inicia o fluxo de perguntas automatizado
+      await iniciarTicketAutomatizado(canalTicket, userId);
+
       await enviarLogTicket(guild, new EmbedBuilder().setTitle("🎫 Ticket Aberto").setColor("Blue")
         .addFields(
           { name: "Usuário", value: `${interaction.user.tag}` },
           { name: "Categoria", value: nomeCategoria },
           { name: "Canal", value: `${canalTicket}` }
         ).setTimestamp());
+
       await interaction.editReply(`✅ Ticket aberto! Acesse: ${canalTicket}`);
       setTimeout(() => enviarPainelTicket(guild), 3000);
     } catch (err) {
@@ -1830,7 +1732,6 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === 'verificacao') {
     const sub = interaction.options.getSubcommand();
 
-    // --- configurar ---
     if (sub === 'configurar') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode configurar.', flags: 64 });
       const cargoNaoVerificado = interaction.options.getRole('cargo-nao-verificado');
@@ -1849,7 +1750,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // --- painel ---
     if (sub === 'painel') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode enviar o painel.', flags: 64 });
       const config = lerConfig();
@@ -1874,7 +1774,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // --- configurar-permissoes ---
     if (sub === 'configurar-permissoes') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar este comando.', flags: 64 });
       await interaction.deferReply({ flags: 64 });
@@ -1887,7 +1786,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // --- dar-cargo-todos ---
     if (sub === 'dar-cargo-todos') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar este comando.', flags: 64 });
       await interaction.deferReply({ flags: 64 });
@@ -1908,7 +1806,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // --- remover-cargo-nao-verificado ---
     if (sub === 'remover-cargo-nao-verificado') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode executar este comando.', flags: 64 });
       await interaction.deferReply({ flags: 64 });
@@ -1930,7 +1827,31 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ========== COMANDOS ORIGINAIS ==========
+  // ========== STATUS (Ideia 7) ==========
+  if (interaction.commandName === 'status') {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'configurar') {
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode configurar.', flags: 64 });
+      const canal = interaction.options.getChannel('canal');
+      if (!canal) return interaction.reply({ content: '❌ Você precisa fornecer um canal.', flags: 64 });
+      const config = lerConfig();
+      config.canalStatus = canal.id;
+      salvarConfig(config);
+      await interaction.reply({ content: `✅ Canal de status configurado: ${canal}`, flags: 64 });
+      // Envia a primeira mensagem de status
+      await atualizarStatus(interaction.guild);
+      return;
+    }
+    if (sub === 'enviar') {
+      if (!temCargoMod(interaction.member)) return interaction.reply({ content: '❌ Apenas staff pode enviar.', flags: 64 });
+      await interaction.deferReply({ flags: 64 });
+      await atualizarStatus(interaction.guild);
+      await interaction.editReply('✅ Status atualizado!');
+      return;
+    }
+  }
+
+  // ========== COMANDOS ORIGINAIS (mantidos) ==========
   // --- /say ---
   if (interaction.commandName === "say") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
@@ -1946,7 +1867,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle(`Avatar de ${user.username}`).setImage(user.displayAvatarURL({ size: 1024, extension: "png" })).setColor("Blue")] });
   }
 
-  // --- /video ---
+  // --- /video (mantido, mas pode remover se quiser) ---
   if (interaction.commandName === "video") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const link = interaction.options.getString("link");
@@ -1962,50 +1883,6 @@ client.on("interactionCreate", async (interaction) => {
     if (thumbnailUrl) embed.setImage(thumbnailUrl);
     await canal.send({ content: "🔔 **Fala galera, vídeo novo no canal!**", embeds: [embed] });
     await interaction.reply({ content: "✅ Anúncio enviado!", flags: 64 });
-  }
-
-  // --- /ofuscar ---
-  if (interaction.commandName === "ofuscar") {
-    await interaction.deferReply({ ephemeral: true });
-    const guild = interaction.guild;
-    const member = interaction.member;
-    if (!guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels)) {
-      return interaction.editReply("❌ Eu não tenho permissão para gerenciar canais!");
-    }
-    const channelName = `ofuscar-${member.user.username}`;
-    try {
-      const channel = await guild.channels.create({
-        name: channelName,
-        type: ChannelType.GuildText,
-        parent: CATEGORIA_TICKETS_ID,
-        permissionOverwrites: [
-          { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: member.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles] },
-          { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
-        ]
-      });
-      userChunks[channel.id] = { userId: member.id, chunks: 6, timeout: null, channel: channel };
-      const timeout = setTimeout(() => { deleteChannel(channel.id); }, INACTIVITY_TIMEOUT);
-      userChunks[channel.id].timeout = timeout;
-      const embed = new EmbedBuilder()
-        .setColor(0xF5D742)
-        .setTitle('🧢 OFUSCADOR DO SEU ZÉ')
-        .setDescription('**Solte seu código aqui, 100% seguro para não vazar.**\n\nEscolha a quantidade de **fragmentos** (quanto mais, mais bagunça):')
-        .setFooter({ text: 'Seu código será ofuscado e retornado em .txt' });
-      const row = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder().setCustomId('chunks_4').setLabel('4').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('chunks_8').setLabel('8').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('chunks_12').setLabel('12').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('chunks_20').setLabel('20').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('chunks_30').setLabel('30').setStyle(ButtonStyle.Primary)
-        );
-      await channel.send({ embeds: [embed], components: [row] });
-      await interaction.editReply(`✅ Canal criado: ${channel.toString()}`);
-    } catch (error) {
-      console.error('Erro ao criar canal de ofuscador:', error);
-      await interaction.editReply('❌ Ocorreu um erro ao criar o canal privado.');
-    }
   }
 
   // --- /avaliar ---
@@ -2269,121 +2146,27 @@ client.on("interactionCreate", async (interaction) => {
       flags: 64
     });
   }
-
-  // --- /giveaway ---
-  if (interaction.commandName === "giveaway") {
-    const sub = interaction.options.getSubcommand();
-    if (sub === "criar") {
-      if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Apenas staff pode criar giveaways.", flags: 64 });
-      const canal = interaction.options.getChannel("canal");
-      const premio = interaction.options.getString("premio");
-      const duracaoStr = interaction.options.getString("duracao");
-      const vencedores = interaction.options.getInteger("vencedores") || 1;
-      const requiredRole = interaction.options.getRole("cargo_obrigatorio")?.id || null;
-      let duracaoMs = 0;
-      const match = duracaoStr.match(/(\d+)([hmsd])/g);
-      if (!match) return interaction.reply({ content: "❌ Formato de duração inválido. Use ex: `1h`, `30m`, `1d`", flags: 64 });
-      for (const part of match) {
-        const num = parseInt(part);
-        const unit = part.slice(-1);
-        if (unit === 's') duracaoMs += num * 1000;
-        else if (unit === 'm') duracaoMs += num * 60 * 1000;
-        else if (unit === 'h') duracaoMs += num * 60 * 60 * 1000;
-        else if (unit === 'd') duracaoMs += num * 24 * 60 * 60 * 1000;
-      }
-      if (duracaoMs <= 0) return interaction.reply({ content: "❌ Duração deve ser maior que 0.", flags: 64 });
-      const endTime = Date.now() + duracaoMs;
-      const embed = new EmbedBuilder()
-        .setTitle(`🎉 GIVEAWAY: ${premio}`)
-        .setColor("Gold")
-        .setDescription(`Clique no botão **Participar** para concorrer!\n\n**Tempo restante:** ${formatarTempo(duracaoMs)}\n**Vencedores:** ${vencedores}\n**Participantes:** 0`)
-        .setFooter({ text: `Host: ${interaction.user.tag} • ID: ${interaction.user.id}` })
-        .setTimestamp();
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`giveaway_join_temp`).setLabel("🎁 Participar").setStyle(ButtonStyle.Primary)
-      );
-      const msg = await canal.send({ embeds: [embed], components: [row] });
-      giveaways[msg.id] = {
-        channelId: canal.id,
-        prize: premio,
-        winners: vencedores,
-        endTime: endTime,
-        hostId: interaction.user.id,
-        hostTag: interaction.user.tag,
-        requiredRole: requiredRole,
-        entered: [],
-        ended: false,
-        winnerIds: [],
-      };
-      const newRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`giveaway_join_${msg.id}`).setLabel("🎁 Participar").setStyle(ButtonStyle.Primary)
-      );
-      await msg.edit({ components: [newRow] });
-      await interaction.reply({ content: `✅ Giveaway criado com sucesso em ${canal}!`, flags: 64 });
-      await enviarLogMod(interaction.guild, new EmbedBuilder()
-        .setTitle("🎁 Giveaway Criado")
-        .setColor("Gold")
-        .addFields(
-          { name: "Prêmio", value: premio },
-          { name: "Canal", value: `${canal}` },
-          { name: "Duração", value: formatarTempo(duracaoMs) },
-          { name: "Vencedores", value: `${vencedores}` },
-          { name: "Cargo obrigatório", value: requiredRole ? `<@&${requiredRole}>` : "Nenhum" }
-        )
-        .setTimestamp());
-    } else if (sub === "reroll") {
-      if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Apenas staff pode usar reroll.", flags: 64 });
-      const messageId = interaction.options.getString("mensagem_id");
-      const giveaway = giveaways[messageId];
-      if (!giveaway) return interaction.reply({ content: "❌ Giveaway não encontrado ou já removido.", flags: 64 });
-      if (!giveaway.ended) return interaction.reply({ content: "❌ Este giveaway ainda está ativo.", flags: 64 });
-      const participantes = giveaway.entered;
-      if (participantes.length === 0) return interaction.reply({ content: "❌ Ninguém participou.", flags: 64 });
-      const shuffled = [...participantes];
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
-      const novosVencedores = shuffled.slice(0, giveaway.winners);
-      giveaway.winnerIds = novosVencedores;
-      const mencoes = novosVencedores.map(id => `<@${id}>`).join(", ");
-      const canal = await client.channels.fetch(giveaway.channelId).catch(() => null);
-      if (canal) {
-        const msg = await canal.messages.fetch(messageId).catch(() => null);
-        if (msg) {
-          const embed = EmbedBuilder.from(msg.embeds[0]);
-          embed.setDescription(`**Novo(s) vencedor(es):** ${mencoes}`);
-          await msg.edit({ embeds: [embed] });
-        }
-      }
-      await interaction.reply({ content: `🎉 **Novos vencedores sorteados!** ${mencoes}`, flags: 64 });
-      await enviarLogMod(interaction.guild, new EmbedBuilder()
-        .setTitle("🎁 Reroll de Giveaway")
-        .setColor("Gold")
-        .addFields(
-          { name: "Prêmio", value: giveaway.prize },
-          { name: "Novos vencedores", value: mencoes }
-        )
-        .setTimestamp());
-    } else if (sub === "listar") {
-      const ativos = Object.entries(giveaways).filter(([_, g]) => !g.ended);
-      if (ativos.length === 0) return interaction.reply({ content: "📭 Não há giveaways ativos no momento.", flags: 64 });
-      const linhas = ativos.map(([id, g]) => {
-        const tempoRestante = g.endTime - Date.now();
-        return `**${g.prize}** — <#${g.channelId}> — ${formatarTempo(tempoRestante)} restante — ${g.entered.length} participantes — ID: \`${id}\``;
-      });
-      await interaction.reply({ embeds: [new EmbedBuilder().setTitle("🎁 Giveaways Ativos").setColor("Blue").setDescription(linhas.join("\n\n") || "Nenhum.").setTimestamp()], flags: 64 });
-    } else if (sub === "encerrar") {
-      if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Apenas staff pode encerrar.", flags: 64 });
-      const messageId = interaction.options.getString("mensagem_id");
-      const giveaway = giveaways[messageId];
-      if (!giveaway) return interaction.reply({ content: "❌ Giveaway não encontrado.", flags: 64 });
-      if (giveaway.ended) return interaction.reply({ content: "❌ Este giveaway já foi encerrado.", flags: 64 });
-      await finalizarGiveaway(messageId);
-      await interaction.reply({ content: `✅ Giveaway **${giveaway.prize}** encerrado manualmente.`, flags: 64 });
-    }
-  }
 });
+
+// =========================== FUNÇÃO PARA ENVIAR AVALIAÇÃO DM ===========================
+async function enviarAvaliacaoDM(user, staffTag, categoria, guild) {
+  try {
+    const embed = new EmbedBuilder()
+      .setTitle("⭐ Avalie o atendimento!")
+      .setColor("Gold")
+      .setDescription(`Seu ticket foi fechado.\n\n**Staff que te atendeu:** ${staffTag}\n**Categoria:** ${categoria}\n\nComo você avalia o atendimento?`)
+      .setFooter({ text: "Clique em uma estrela para avaliar" });
+    const botoes = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("avaliacao_ticket_1").setLabel("⭐").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("avaliacao_ticket_2").setLabel("⭐⭐").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("avaliacao_ticket_3").setLabel("⭐⭐⭐").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("avaliacao_ticket_4").setLabel("⭐⭐⭐⭐").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("avaliacao_ticket_5").setLabel("⭐⭐⭐⭐⭐").setStyle(ButtonStyle.Success)
+    );
+    await user.send({ embeds: [embed], components: [botoes] });
+    avaliacoesPendentes[user.id] = { staffTag, categoria, guildId: guild.id };
+  } catch (err) { console.error("[ERRO DM AVALIAÇÃO]", err.message); }
+}
 
 // =========================== MONITORAMENTO PASSIVO ===========================
 setInterval(() => {
@@ -2428,7 +2211,15 @@ client.once("ready", async () => {
       .addSubcommand(sub => sub.setName('dar-cargo-todos').setDescription('Dá o cargo de verificado para todos os membros atuais'))
       .addSubcommand(sub => sub.setName('remover-cargo-nao-verificado').setDescription('Remove o cargo de não verificado de todos os membros')),
 
-    // ========== COMANDOS ORIGINAIS ==========
+    // ========== COMANDO DE STATUS ==========
+    new SlashCommandBuilder()
+      .setName('status')
+      .setDescription('Painel de status do servidor')
+      .addSubcommand(sub => sub.setName('configurar').setDescription('Define o canal onde o status será enviado')
+        .addChannelOption(opt => opt.setName('canal').setDescription('Canal de destino').setRequired(true).addChannelTypes(ChannelType.GuildText)))
+      .addSubcommand(sub => sub.setName('enviar').setDescription('Envia/atualiza o status manualmente')),
+
+    // ========== COMANDOS ORIGINAIS (mantidos, exceto ofuscador, giveaway, sticky) ==========
     new SlashCommandBuilder().setName("say").setDescription("Faz o bot enviar uma mensagem")
       .addStringOption(opt => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true))
       .addChannelOption(opt => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
@@ -2439,7 +2230,6 @@ client.once("ready", async () => {
       .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde anunciar").setRequired(true))
       .addStringOption(opt => opt.setName("titulo").setDescription("Título personalizado").setRequired(false))
       .addStringOption(opt => opt.setName("imagem").setDescription("Link de imagem").setRequired(false)),
-    new SlashCommandBuilder().setName("ofuscar").setDescription("Cria um canal privado para ofuscar seu script Luau com segurança."),
     new SlashCommandBuilder().setName("avaliar").setDescription("Avalie um membro do staff pelo atendimento no chat")
       .addUserOption(opt => opt.setName("staff").setDescription("Qual staff você quer avaliar").setRequired(true)),
     new SlashCommandBuilder().setName("kick").setDescription("[STAFF] Expulsa um membro do servidor")
@@ -2476,20 +2266,6 @@ client.once("ready", async () => {
       .addChannelOption(opt => opt.setName("canal").setDescription("Canal a ser deletado (se omitido, usa o canal atual)").setRequired(false))
       .addStringOption(opt => opt.setName("motivo").setDescription("Motivo da deleção (opcional)").setRequired(false)),
     new SlashCommandBuilder()
-      .setName("giveaway")
-      .setDescription("Sistema de giveaways")
-      .addSubcommand(sub => sub.setName("criar").setDescription("Cria um novo giveaway")
-        .addChannelOption(opt => opt.setName("canal").setDescription("Canal onde o giveaway será anunciado").setRequired(true).addChannelTypes(ChannelType.GuildText))
-        .addStringOption(opt => opt.setName("premio").setDescription("Prêmio do giveaway").setRequired(true))
-        .addStringOption(opt => opt.setName("duracao").setDescription("Duração (ex: 1h, 30m, 1d)").setRequired(true))
-        .addIntegerOption(opt => opt.setName("vencedores").setDescription("Número de vencedores (padrão: 1)").setRequired(false).setMinValue(1).setMaxValue(25))
-        .addRoleOption(opt => opt.setName("cargo_obrigatorio").setDescription("Cargo obrigatório para participar (opcional)").setRequired(false)))
-      .addSubcommand(sub => sub.setName("reroll").setDescription("Sorteia novamente os vencedores de um giveaway encerrado")
-        .addStringOption(opt => opt.setName("mensagem_id").setDescription("ID da mensagem do giveaway").setRequired(true)))
-      .addSubcommand(sub => sub.setName("listar").setDescription("Lista todos os giveaways ativos no servidor"))
-      .addSubcommand(sub => sub.setName("encerrar").setDescription("Encerra um giveaway ativo manualmente")
-        .addStringOption(opt => opt.setName("mensagem_id").setDescription("ID da mensagem do giveaway").setRequired(true))),
-    new SlashCommandBuilder()
       .setName("webhook")
       .setDescription("[STAFF] Gerencia o webhook de executores")
       .addSubcommand(sub => sub.setName("painel").setDescription("Envia o painel fixo no canal configurado"))
@@ -2520,18 +2296,18 @@ client.once("ready", async () => {
     await enviarPainelAvaliacao(guild);
     await enviarPainelFixo(guild);
     console.log("[PAINEL FIXO] Painel fixo enviado no ready.");
+
+    // Inicia o status se já houver canal configurado
+    if (config.canalStatus) {
+      await atualizarStatus(guild);
+      // Atualiza a cada 5 minutos
+      setInterval(() => atualizarStatus(guild), 5 * 60 * 1000);
+    }
   } else {
     console.warn("⚠️ Servidor não encontrado. Verifique o GUILD_ID.");
   }
 
-  setInterval(async () => {
-    for (const messageId in giveaways) {
-      if (!giveaways[messageId].ended) {
-        await atualizarGiveaway(messageId);
-      }
-    }
-  }, 15000);
-
+  // Limpeza de verificações expiradas
   setInterval(() => {
     const agora = Date.now();
     for (const [userId, data] of Object.entries(verificacoesPendentes)) {
