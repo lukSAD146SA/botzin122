@@ -799,7 +799,7 @@ async function processarRespostaTicket(message) {
   }
 }
 
-// =========================== SISTEMA DE PAINEL FIXO DE CALL ===========================
+// =========================== SISTEMA DE PAINEL FIXO DE CALL (SEM IMAGEM) ===========================
 async function enviarPainelCall(guild) {
   const config = lerConfig();
   const canalId = config.canalPainelCall;
@@ -820,7 +820,7 @@ async function enviarPainelCall(guild) {
     .setTitle('🎤 Crie seu canal de voz')
     .setDescription('Clique no botão abaixo para criar um canal de voz temporário.\nVocê poderá definir nome, limite de pessoas e se deseja chamar o bot de música.')
     .setColor('Green')
-    .setImage('https://i.imgur.com/tov858d.png')
+    // IMAGEM REMOVIDA AQUI
     .setFooter({ text: 'O canal será deletado automaticamente quando ficar vazio.' })
     .setTimestamp();
 
@@ -943,6 +943,39 @@ async function criarCallModal(interaction) {
   }
 }
 
+// =========================== COMANDO !join (BOT DE MÚSICA) ===========================
+async function joinMusica(message) {
+  const member = message.member;
+  if (!member.voice.channel) {
+    return message.reply('❌ Você precisa estar em um canal de voz para usar este comando.');
+  }
+  const config = lerConfig();
+  const botId = config.botMusicaId;
+  if (!botId) {
+    return message.reply('❌ O ID do bot de música não está configurado. Use `/call configurar bot-id`.');
+  }
+  try {
+    const botMember = await message.guild.members.fetch(botId).catch(() => null);
+    if (!botMember) {
+      return message.reply('❌ Não encontrei o bot de música com o ID configurado. Verifique se ele está no servidor.');
+    }
+    if (botMember.voice.channelId === member.voice.channel.id) {
+      return message.reply('ℹ️ O bot de música já está neste canal de voz.');
+    }
+    await botMember.voice.setChannel(member.voice.channel, 'Comando !join');
+    await message.reply(`✅ Bot de música entrou no canal **${member.voice.channel.name}**!`);
+    for (const [chId, data] of Object.entries(voiceChannels)) {
+      if (chId === member.voice.channel.id) {
+        voiceChannels[chId].botMoved = true;
+        break;
+      }
+    }
+  } catch (err) {
+    console.error('[!join] Erro ao mover bot:', err);
+    await message.reply('❌ Erro ao mover o bot de música. Verifique minhas permissões.');
+  }
+}
+
 // =========================== EVENTOS ===========================
 client.on("guildMemberAdd", async (member) => {
   const config = lerConfig();
@@ -958,6 +991,7 @@ client.on("guildMemberAdd", async (member) => {
         .setTitle('👋 Bem-vindo(a)!')
         .setDescription(`Olá ${member.user}, seja bem-vindo ao servidor!\n\nClique no botão abaixo para iniciar a verificação.\nVocê receberá um código no chat (apenas você verá).`)
         .setColor('Green')
+        .setImage('https://i.imgur.com/tov858d.png')
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('verificar_geral').setLabel('🔐 Iniciar Verificação').setStyle(ButtonStyle.Success).setEmoji('🔐')
@@ -970,6 +1004,13 @@ client.on("guildMemberAdd", async (member) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
+
+  // ===== COMANDO !join =====
+  if (message.content.trim().toLowerCase() === '!join') {
+    await joinMusica(message);
+    return;
+  }
+
   const member = message.member;
 
   // --- Auto mod: palavras proibidas (regex) ---
@@ -1261,7 +1302,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const embedAtualizado = new EmbedBuilder()
         .setTitle(`🎫 Ticket — ${ticket.categoria}`).setColor("Green")
-        .setThumbnail("https://i.imgur.com/6sSikdc.png")
+        .setImage("https://i.imgur.com/6sSikdc.png")
         .setDescription(`Olá <@${ticket.userId}>! 👋\n\nSeu ticket está sendo atendido por **${interaction.user}**!\n\n📌 **Descreva seu problema com detalhes.**\n⏰ Abertura: <t:${Math.floor(ticket.abertura / 1000)}:F>`)
         .addFields(
           { name: "👤 Usuário", value: `<@${ticket.userId}>` },
@@ -1669,7 +1710,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const embed = new EmbedBuilder()
         .setTitle(`🎫 Ticket — ${nomeCategoria}`).setColor("Blue")
-        .setThumbnail("https://i.imgur.com/6sSikdc.png")
+        .setImage("https://i.imgur.com/6sSikdc.png")
         .setDescription(`Olá ${interaction.user}! 👋\n\nSeu ticket foi aberto na categoria **${nomeCategoria}**.\nNossa equipe irá te atender o mais rápido possível!\n\n⏰ Abertura: <t:${Math.floor(agora / 1000)}:F>`)
         .addFields(
           { name: "👤 Usuário", value: `${interaction.user}` },
@@ -1737,6 +1778,7 @@ client.on("interactionCreate", async (interaction) => {
         .setTitle('🔐 Verificação de Segurança')
         .setDescription('Clique no botão abaixo para se verificar.')
         .setColor('Blue')
+        .setImage('https://i.imgur.com/tov858d.png')
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('verificar_geral').setLabel('🔐 Iniciar Verificação').setStyle(ButtonStyle.Success).setEmoji('🔐')
@@ -2195,7 +2237,6 @@ client.once("ready", async () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
 
   const commands = [
-    // Verificação
     new SlashCommandBuilder().setName('verificacao').setDescription('Gerencia o sistema de verificação')
       .addSubcommand(sub => sub.setName('configurar').setDescription('Configura os cargos e canal de verificação')
         .addRoleOption(opt => opt.setName('cargo-nao-verificado').setDescription('Cargo para membros não verificados').setRequired(false))
@@ -2205,12 +2246,10 @@ client.once("ready", async () => {
       .addSubcommand(sub => sub.setName('configurar-permissoes').setDescription('Configura as permissões de todos os canais'))
       .addSubcommand(sub => sub.setName('dar-cargo-todos').setDescription('Dá o cargo de verificado para todos os membros'))
       .addSubcommand(sub => sub.setName('remover-cargo-nao-verificado').setDescription('Remove o cargo de não verificado')),
-    // Status
     new SlashCommandBuilder().setName('status').setDescription('Painel de status do servidor')
       .addSubcommand(sub => sub.setName('configurar').setDescription('Define o canal do status')
         .addChannelOption(opt => opt.setName('canal').setDescription('Canal de destino').setRequired(true).addChannelTypes(ChannelType.GuildText)))
       .addSubcommand(sub => sub.setName('enviar').setDescription('Envia/atualiza o status')),
-    // Call
     new SlashCommandBuilder().setName('call').setDescription('Sistema de call com painel fixo')
       .addSubcommand(sub => sub.setName('configurar').setDescription('Configura o sistema (staff)')
         .addChannelOption(opt => opt.setName('categoria').setDescription('Categoria onde os canais serão criados').setRequired(false).addChannelTypes(ChannelType.GuildCategory))
@@ -2218,7 +2257,6 @@ client.once("ready", async () => {
         .addStringOption(opt => opt.setName('bot-id').setDescription('ID do bot de música').setRequired(false))
         .addChannelOption(opt => opt.setName('painel-canal').setDescription('Canal onde o painel fixo será enviado').setRequired(false).addChannelTypes(ChannelType.GuildText)))
       .addSubcommand(sub => sub.setName('painel').setDescription('Envia o painel fixo de call (staff)')),
-    // Comandos originais
     new SlashCommandBuilder().setName("say").setDescription("Faz o bot enviar uma mensagem")
       .addStringOption(opt => opt.setName("mensagem").setDescription("O que o bot vai dizer").setRequired(true))
       .addChannelOption(opt => opt.setName("canal").setDescription("Canal de destino").setRequired(false)),
