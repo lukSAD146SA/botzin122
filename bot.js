@@ -38,12 +38,17 @@ const CANAL_AVALIACOES_ID = "1524630141182021682";
 const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797";
 const CATEGORIA_STAFF_ID = "1508506066051272825";
+
+// ========== CANAIS QUE NOVATOS PODEM VER ==========
+// ADICIONEI O ID DO CANAL DE VERIFICAÇÃO AQUI
 const CANAIS_PERMITIDOS_PARA_NOVATOS = [
   "1509265302846705727",
   "1509265663175299072",
   "1509269400774115489",
-  "1508390560795197500"
+  "1508390560795197500",
+  "1530291592609533993" // <-- CANAL DE VERIFICAÇÃO ADICIONADO
 ];
+
 const CARGOS_MODERACAO = ["1508405150572871720"];
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000;
 
@@ -820,7 +825,6 @@ async function enviarPainelCall(guild) {
     .setTitle('🎤 Crie seu canal de voz')
     .setDescription('Clique no botão abaixo para criar um canal de voz temporário.\nVocê poderá definir nome, limite de pessoas e se deseja chamar o bot de música.')
     .setColor('Green')
-    // IMAGEM REMOVIDA AQUI
     .setFooter({ text: 'O canal será deletado automaticamente quando ficar vazio.' })
     .setTimestamp();
 
@@ -981,9 +985,20 @@ client.on("guildMemberAdd", async (member) => {
   const config = lerConfig();
   const cargoNaoVerificado = config.cargoNaoVerificado;
   const canalVerificacao = config.canalVerificacao;
+
+  // Aplica o cargo de novato se configurado
   if (cargoNaoVerificado) {
-    try { await member.roles.add(cargoNaoVerificado); } catch (err) { console.error('[VERIF] Erro ao aplicar cargo temporário:', err); }
+    try {
+      await member.roles.add(cargoNaoVerificado);
+      console.log(`[VERIF] Cargo de novato aplicado a ${member.user.tag}`);
+    } catch (err) {
+      console.error('[VERIF] Erro ao aplicar cargo temporário:', err);
+    }
+  } else {
+    console.warn('[VERIF] Cargo não verificado não configurado. Use /verificacao configurar.');
   }
+
+  // Envia a mensagem de boas-vindas no canal de verificação (se configurado)
   if (canalVerificacao) {
     const canal = await member.guild.channels.fetch(canalVerificacao).catch(() => null);
     if (canal) {
