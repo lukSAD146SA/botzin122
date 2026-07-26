@@ -39,14 +39,12 @@ const CANAL_AVALIACOES_LOGS_ID = "1526278008929783858";
 const CANAL_VERIFICACAO_LOGS_ID = "1523437994848157797";
 const CATEGORIA_STAFF_ID = "1508506066051272825";
 
-// ========== CANAIS QUE NOVATOS PODEM VER ==========
-// ADICIONEI O ID DO CANAL DE VERIFICAÇÃO AQUI
 const CANAIS_PERMITIDOS_PARA_NOVATOS = [
   "1509265302846705727",
   "1509265663175299072",
   "1509269400774115489",
   "1508390560795197500",
-  "1530291592609533993" // <-- CANAL DE VERIFICAÇÃO ADICIONADO
+  "1530291592609533993"
 ];
 
 const CARGOS_MODERACAO = ["1508405150572871720"];
@@ -986,7 +984,6 @@ client.on("guildMemberAdd", async (member) => {
   const cargoNaoVerificado = config.cargoNaoVerificado;
   const canalVerificacao = config.canalVerificacao;
 
-  // Aplica o cargo de novato se configurado
   if (cargoNaoVerificado) {
     try {
       await member.roles.add(cargoNaoVerificado);
@@ -998,7 +995,6 @@ client.on("guildMemberAdd", async (member) => {
     console.warn('[VERIF] Cargo não verificado não configurado. Use /verificacao configurar.');
   }
 
-  // Envia a mensagem de boas-vindas no canal de verificação (se configurado)
   if (canalVerificacao) {
     const canal = await member.guild.channels.fetch(canalVerificacao).catch(() => null);
     if (canal) {
@@ -1006,7 +1002,7 @@ client.on("guildMemberAdd", async (member) => {
         .setTitle('👋 Bem-vindo(a)!')
         .setDescription(`Olá ${member.user}, seja bem-vindo ao servidor!\n\nClique no botão abaixo para iniciar a verificação.\nVocê receberá um código no chat (apenas você verá).`)
         .setColor('Green')
-        .setImage('https://i.imgur.com/tov858d.png')
+        // IMAGEM REMOVIDA DA MENSAGEM DE BOAS-VINDAS
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('verificar_geral').setLabel('🔐 Iniciar Verificação').setStyle(ButtonStyle.Success).setEmoji('🔐')
@@ -1020,7 +1016,6 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
 
-  // ===== COMANDO !join =====
   if (message.content.trim().toLowerCase() === '!join') {
     await joinMusica(message);
     return;
@@ -1028,7 +1023,6 @@ client.on("messageCreate", async (message) => {
 
   const member = message.member;
 
-  // --- Auto mod: palavras proibidas (regex) ---
   const conteudo = message.content;
   if (PALAVRAS_PROIBIDAS_REGEX.test(conteudo) && !temCargoMod(member)) {
     try { await message.delete(); } catch {}
@@ -1044,7 +1038,6 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- Palavras graves ---
   if (PALAVRAS_GRAVES_REGEX.test(conteudo) && !temCargoMod(member)) {
     try { await message.delete(); } catch {}
     try {
@@ -1063,7 +1056,6 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- Flood (8 mensagens em 5s) ---
   if (!client.floodUsers) client.floodUsers = {};
   const user = client.floodUsers[message.author.id] || { count: 0, timer: null };
   user.count++;
@@ -1088,7 +1080,6 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- Repetição (3 canais diferentes em 1 minuto) ---
   if (!mensagensRecentes[message.author.id]) mensagensRecentes[message.author.id] = [];
   const msgs = mensagensRecentes[message.author.id];
   const canaisDiferentes = new Set();
@@ -1115,7 +1106,6 @@ client.on("messageCreate", async (message) => {
   msgs.push({ content: message.content, channelId: message.channel.id, timestamp: Date.now() });
   if (msgs.length > 10) msgs.shift();
 
-  // --- @everyone/@here ---
   if (message.content.includes("@everyone") || message.content.includes("@here")) {
     if (!message.member.roles.cache.has(CARGO_SUPORTE_ID)) {
       try { await message.delete(); } catch {}
@@ -1125,7 +1115,6 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // --- Mass mention ---
   if (message.mentions.users.size > 5 || message.mentions.roles.size > 3) {
     if (!temCargoMod(message.member)) {
       try { await message.delete(); } catch {}
@@ -1135,7 +1124,6 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // --- Formulário de staff ---
   const estadoForm = formulariosPendentes[message.channel.id];
   if (estadoForm) {
     if (message.author.id !== estadoForm.userId) return;
@@ -1170,7 +1158,6 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- Ticket automatizado ---
   const ticket = tickets[message.channel.id];
   if (ticket && ticket.etapa !== undefined && ticket.etapa < TICKET_PERGUNTAS.length) {
     if (message.author.id === ticket.userId) {
@@ -1185,7 +1172,6 @@ client.on("messageCreate", async (message) => {
 // =========================== INTERACTIONS ===========================
 client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton()) {
-    // Verificação
     if (interaction.customId === 'verificar_geral') {
       const userId = interaction.user.id;
       const config = lerConfig();
@@ -1236,7 +1222,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Avaliação ----
     if (interaction.customId === "abrir_modal_avaliacao") {
       const modal = new ModalBuilder()
         .setCustomId("modal_avaliacao_staff")
@@ -1250,7 +1235,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Avaliação de ticket ----
     if (interaction.customId.startsWith("avaliacao_ticket_")) {
       const nota = parseInt(interaction.customId.split("_")[2]);
       const estrelas = "⭐".repeat(nota);
@@ -1272,7 +1256,6 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `✅ Obrigado pela avaliação! Você deu **${estrelas} (${nota}/5)**.`, embeds: [], components: [] });
     }
 
-    // ---- Avaliação de chat ----
     if (interaction.customId.startsWith("avaliacao_chat_")) {
       const partes = interaction.customId.split("_");
       const nota = parseInt(partes[2]);
@@ -1295,7 +1278,6 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `✅ Avaliação enviada! Você deu **${estrelas} (${nota}/5)**.`, embeds: [], components: [] });
     }
 
-    // ---- Reivindicar ticket (corrigido) ----
     if (interaction.customId === "reivindicar_ticket") {
       const channelId = interaction.message.channelId;
       const ticket = tickets[channelId];
@@ -1345,7 +1327,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Fechar ticket (corrigido) ----
     if (interaction.customId === "fechar_ticket") {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Só staff pode fechar tickets!", flags: 64 });
       const channelId = interaction.message.channelId;
@@ -1397,7 +1378,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Deletar canal (confirmação) ----
     if (interaction.customId.startsWith("confirmar_deletar_canal_")) {
       const canalId = interaction.customId.split("_")[3];
       const canal = await interaction.guild.channels.fetch(canalId).catch(() => null);
@@ -1429,7 +1409,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Formulário de staff - Iniciar ----
     if (interaction.customId === "formulario_iniciar") {
       const userId = interaction.user.id;
       for (const [channelId, estado] of Object.entries(formulariosPendentes)) {
@@ -1448,7 +1427,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Formulário - Confirmar ----
     if (interaction.customId === "form_confirmar") {
       try {
         const estado = formulariosPendentes[interaction.channel.id];
@@ -1467,7 +1445,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Formulário - Cancelar ----
     if (interaction.customId === "form_cancelar") {
       const estado = formulariosPendentes[interaction.channel.id];
       if (estado?.timeout) clearTimeout(estado.timeout);
@@ -1477,7 +1454,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Formulário - Aceitar Staff ----
     if (interaction.customId.startsWith("form_aceitar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1498,7 +1474,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Formulário - Recusar Staff ----
     if (interaction.customId.startsWith("form_recusar_")) {
       const userId = interaction.customId.split('_')[2];
       const data = formulariosEnviados[userId];
@@ -1519,7 +1494,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Webhook - Toggle executor ----
     if (interaction.customId.startsWith('exec_toggle_')) {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
       const id = interaction.customId.replace('exec_toggle_', '');
@@ -1534,7 +1508,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Webhook - Editar executor (abre modal) ----
     if (interaction.customId.startsWith('exec_edit_')) {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
       const id = interaction.customId.replace('exec_edit_', '');
@@ -1553,7 +1526,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- Webhook - Enviar ----
     if (interaction.customId === 'exec_enviar_webhook') {
       if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
       await interaction.reply({ content: '⏳ Enviando webhook...', flags: 64 });
@@ -1562,7 +1534,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- CALL - ABRIR MODAL (painel fixo) ----
     if (interaction.customId === 'abrir_modal_call') {
       const modal = new ModalBuilder()
         .setCustomId('modal_criar_call')
@@ -1603,7 +1574,6 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ---- MODAIS ----
   if (interaction.isModalSubmit()) {
     if (interaction.customId === 'modal_verificacao') {
       await processarVerificacaoModal(interaction);
@@ -1661,14 +1631,12 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- CALL - MODAL ----
     if (interaction.customId === 'modal_criar_call') {
       await criarCallModal(interaction);
       return;
     }
   }
 
-  // ---- SELECT MENU (ticket) ----
   if (interaction.isStringSelectMenu() && interaction.customId === "ticket_categoria") {
     const categoria = interaction.values[0];
     const userId = interaction.user.id;
@@ -1759,7 +1727,6 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  // ---- COMANDOS SLASH ----
   if (!interaction.isChatInputCommand()) return;
 
   // ========== VERIFICAÇÃO ==========
@@ -1793,7 +1760,7 @@ client.on("interactionCreate", async (interaction) => {
         .setTitle('🔐 Verificação de Segurança')
         .setDescription('Clique no botão abaixo para se verificar.')
         .setColor('Blue')
-        .setImage('https://i.imgur.com/tov858d.png')
+        // IMAGEM REMOVIDA DO PAINEL DE VERIFICAÇÃO
         .setTimestamp();
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('verificar_geral').setLabel('🔐 Iniciar Verificação').setStyle(ButtonStyle.Success).setEmoji('🔐')
@@ -1906,7 +1873,6 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   // ========== COMANDOS ORIGINAIS ==========
-  // --- /say ---
   if (interaction.commandName === "say") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const texto = interaction.options.getString("mensagem");
@@ -1915,13 +1881,11 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ content: "✅ Enviado!", flags: 64 });
   }
 
-  // --- /avatar ---
   if (interaction.commandName === "avatar") {
     const user = interaction.options.getUser("usuario") || interaction.user;
     await interaction.reply({ embeds: [new EmbedBuilder().setTitle(`Avatar de ${user.username}`).setImage(user.displayAvatarURL({ size: 1024, extension: "png" })).setColor("Blue")] });
   }
 
-  // --- /video ---
   if (interaction.commandName === "video") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const link = interaction.options.getString("link");
@@ -1939,7 +1903,6 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ content: "✅ Anúncio enviado!", flags: 64 });
   }
 
-  // --- /avaliar ---
   if (interaction.commandName === "avaliar") {
     const staff = interaction.options.getUser("staff");
     if (staff.id === interaction.user.id) return interaction.reply({ content: "❌ Você não pode se avaliar!", flags: 64 });
@@ -1959,7 +1922,6 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ embeds: [embed], components: [botoes], flags: 64 });
   }
 
-  // --- /kick ---
   if (interaction.commandName === "kick") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
@@ -1977,7 +1939,6 @@ client.on("interactionCreate", async (interaction) => {
     } catch (err) { console.error("[ERRO KICK]", err); await interaction.reply({ content: "❌ Erro ao expulsar o usuário.", flags: 64 }); }
   }
 
-  // --- /ban ---
   if (interaction.commandName === "ban") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
@@ -1994,7 +1955,6 @@ client.on("interactionCreate", async (interaction) => {
     } catch (err) { console.error("[ERRO BAN]", err); await interaction.reply({ content: "❌ Erro ao banir o usuário.", flags: 64 }); }
   }
 
-  // --- /mute ---
   if (interaction.commandName === "mute") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: 64 });
     const usuario = interaction.options.getUser("usuario");
@@ -2014,7 +1974,6 @@ client.on("interactionCreate", async (interaction) => {
     } catch (err) { console.error("[ERRO MUTE]", err); await interaction.reply({ content: "❌ Erro ao mutar o usuário.", flags: 64 }); }
   }
 
-  // --- /formulario ---
   if (interaction.commandName === "formulario") {
     const sub = interaction.options.getSubcommand();
     if (sub === "configurar") {
@@ -2034,7 +1993,6 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // --- /webhook ---
   if (interaction.commandName === "webhook") {
     const sub = interaction.options.getSubcommand();
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão.", flags: 64 });
@@ -2056,7 +2014,6 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // --- /lockdown ---
   if (interaction.commandName === "lockdown") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Sem permissão.", flags: 64 });
     const motivo = interaction.options.getString("motivo") || "Sem motivo especificado";
@@ -2177,7 +2134,6 @@ client.on("interactionCreate", async (interaction) => {
     setTimeout(async () => { try { await interaction.channel.delete(); } catch {} }, 5000);
   }
 
-  // --- /deletar-canal ---
   if (interaction.commandName === "deletar-canal") {
     if (!temCargoMod(interaction.member)) return interaction.reply({ content: "❌ Você não tem permissão.", flags: 64 });
     const canal = interaction.options.getChannel("canal") || interaction.channel;
