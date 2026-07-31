@@ -2,13 +2,14 @@
   "name": "botzin122",
   "version": "1.0.0",
   "main": "bot.js",
+  "engines": {
+    "node": "18.x"
+  },
   "scripts": {
-    "start": "node bot.js"
+    "start": "node --max-old-space-size=256 bot.js",
+    "build": "npm install --production"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
-    "@discordjs/voice": "^0.16.0",
-    "fs": "^0.0.1-security",
-    "path": "^0.12.7"
+    "discord.js": "^14.14.1"
   }
 }
